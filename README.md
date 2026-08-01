@@ -1100,6 +1100,142 @@ Stored in `relations`, unique on `(from_condition_id, to_condition_id, type)`,
 so re-extraction refreshes `last_seen_at` instead of inserting duplicates.
 `first_seen_at` never moves, and a `CHECK` rejects self-edges.
 
+## Alerting
+
+[`src/alerts/`](src/alerts/) fires a Discord webhook when a violation is
+confirmed above a configurable net edge. The message carries both market
+questions, the current prices, the constraint violated, the net edge, the max
+executable size, and direct Polymarket links.
+
+Sending is the easy half. **Deduplication is the feature**, and it is what
+separates an operational alerter from a script that shouts every minute.
+
+### What decides whether to send
+
+[`dedupe.ts`](src/alerts/dedupe.ts) is one pure function over (stored state,
+current value, clock) returning `send | escalate | resolve | suppress`. No
+network, no database, no `Date.now()` — every rule below is a table-driven test.
+
+| Situation | Decision | Why |
+| --- | --- | --- |
+| Never alerted | `send` | The first observation |
+| Alerted, inside cooldown | `suppress` | One alert per violation, not per check cycle |
+| Alerted, past cooldown, edge unchanged | `suppress` | A persisting violation is one fact, not a new one every 30 minutes |
+| Past cooldown, edge ≥ 2× last alerted | `escalate` | Materially different opportunity — staying silent would be the bug |
+| Resolved, never followed up | `resolve` | Edits the original message with the lifetime |
+| Resolved, already followed up | `suppress` | Terminal |
+
+The cooldown gates escalation too. Without that, an edge oscillating around the
+2× line escalates on every check — the noisiest possible failure mode, hit
+precisely when the market is most interesting.
+
+At a 60-second cadence a violation lasting an hour would otherwise produce 60
+messages. It produces one, plus an escalation if it doubles, plus a resolution.
+
+### Dedup that survives restarts and replicas
+
+State lives in `alert_deliveries`, keyed `violation:<id>` / `digest:<hour>` /
+`system:<signal>`, unique on `alert_key`.
+
+**The claim happens before the send, not after.** Two replicas ticking the same
+second both reach the same decision; the unique index decides which one sends.
+The loser gets a conflict and returns without a message. Doing it the other way
+round — send, then record — makes the duplicate the *normal* outcome of a crash
+between the two steps.
+
+A send that fails keeps its claim. Retrying every minute against a webhook that
+is down converts one outage into a queue of stale alerts that arrive together
+when it recovers.
+
+### Escalation compares against what was announced
+
+`last_alert_value` is the edge *of the last message sent*, not the last edge
+observed. Comparing against the observed value would let an edge creeping up 10%
+per check escalate forever without ever doubling relative to anything a human
+saw.
+
+### The hourly digest
+
+Most screened gaps do not survive the spread, and alerting on each would bury
+the confirmed ones. [`digest.ts`](src/alerts/digest.ts) batches the
+apparent-but-unexecutable ones into one message per hour, grouped by *reason*
+rather than listed:
+
+> `37× the spread and fees exceed the mispricing`
+> `4× a leg has nothing offered`
+
+Thirty-seven lines are thirty-seven lines; "37×" is a fact about the venue.
+
+It covers the last **complete** hour, keyed by the hour bucket. A digest of a
+partial hour would be followed by another for the same hour — the exact
+duplication the module exists to prevent. So the job can fire every ten minutes
+and five of six calls correctly do nothing.
+
+### System health
+
+[`system.ts`](src/alerts/system.ts) alerts on the pipeline itself, not the
+markets:
+
+| Signal | Fires when |
+| --- | --- |
+| `ingest-stale` | No successful ingest in 30 minutes |
+| `rate-limit-spike` | 429s exceed the threshold in the window |
+| `queue-depth-growing` | Coherence queue deeper than the floor **and** deeper than last check |
+| `gamma-parse-failures` | Share of records failing zod validation exceeds 5% |
+
+Queue depth requires *growth*, not just depth: one check waiting is normal
+scheduling, and alerting on depth alone means an alert on every slow run.
+
+The parse-failure signal is the interesting one. It is not about a bad record —
+those degrade field-locally by design. A *rate* of parse failures is the early
+warning that Polymarket changed their schema, which is the failure mode where
+everything downstream keeps running and silently means something else.
+
+### Sending
+
+[`discord.ts`](src/alerts/discord.ts) posts with `?wait=true` — without it
+Discord answers `204` with no body and nothing can ever be edited afterwards,
+which would make the resolution follow-up impossible. It prefers the float
+`retry_after` in a 429 body over the second-granularity header (rounding down
+earns a second 429), fails fast on 401/403 rather than burning retries on a
+revoked webhook, and treats a 404 on edit as "someone tidied the channel"
+rather than an error.
+
+`allowed_mentions: { parse: [] }` on every message. Market questions are
+attacker-controlled text — anyone can create a market — so an `@everyone` in one
+must not notify the server.
+
+Embed limits are enforced in [`format.ts`](src/alerts/format.ts) and asserted in
+tests. Discord rejects an over-long message with a 400, which would mean the
+alerts that fail to send are exactly the ones about the wordiest markets.
+
+### Verifying it
+
+```bash
+pnpm alerts:drill                      # local mock Discord over real HTTP
+pnpm alerts:drill --webhook=<url>      # against a real channel
+```
+
+The drill exercises the real `DiscordClient` against a local mock that throttles
+once with a 429, then asserts each path fires **exactly** the expected number of
+times under repeated triggering:
+
+```
+✓ confirmed violation × 20 checks                expected 1, sent 1
+✓ below threshold × 10 checks                    expected 0, sent 0
+✓ escalation (2× edge) × 19 checks               expected 1, sent 1
+✓ 1.5× growth after escalation × 9               expected 0, sent 0
+✓ resolution follow-up × 10 checks               expected 1, sent 1
+✓ 4 system signals × 8 checks                    expected 4, sent 4
+✓ hourly digest × 30 calls in one hour           expected 1, sent 1
+
+ALL PATHS FIRED EXACTLY AS EXPECTED — no duplicates
+HTTP requests actually delivered: 8 (counted 8)
+```
+
+The last line matters: it counts requests the mock server actually received, so
+"sent 1" cannot be satisfied by a transport that quietly dropped the message.
+
 ## Metrics
 
 `GET /metrics` serves the Prometheus text exposition format, and Fly's managed

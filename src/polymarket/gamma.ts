@@ -1,5 +1,6 @@
 import { describeError } from '../errors.js';
 import { createLogger } from '../logger.js';
+import { gammaParseIssues, gammaRecords } from '../metrics.js';
 import {
   attemptSignal,
   defaultSleep,
@@ -379,6 +380,12 @@ export class GammaClient {
   }
 
   #reportIssues(kind: string, id: string, issues: readonly FieldIssue[]): void {
+    // Counted per *record*, not per issue: the alerting signal is "what share
+    // of records the schemas no longer fully understand", and a single renamed
+    // field producing three issues on one record is one record, not three.
+    gammaRecords.inc({ kind });
+    if (issues.length > 0) gammaParseIssues.inc({ kind });
+
     for (const issue of issues) {
       this.#logger.warn(
         {

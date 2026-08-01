@@ -133,6 +133,43 @@ const envSchema = z.object({
    * order-book spend when a stale quote cache makes everything look violated.
    */
   COHERENCE_MAX_CONFIRMATIONS: z.coerce.number().int().min(1).max(500).default(25),
+
+  // --- alerting -------------------------------------------------------------
+
+  /**
+   * Discord incoming webhook. Absent means alerts are logged rather than sent,
+   * so every threshold and dedup rule still runs and is observable.
+   */
+  DISCORD_WEBHOOK_URL: z.url().optional(),
+
+  /**
+   * Minimum gap between two messages about the same thing. Gates escalations
+   * too — see `src/alerts/dedupe.ts`.
+   */
+  ALERT_COOLDOWN_MS: z.coerce.number().int().min(0).max(86_400_000).default(1_800_000),
+
+  /** Growth factor that justifies breaking the cooldown silence. */
+  ALERT_ESCALATION_FACTOR: z.coerce.number().min(1).max(100).default(2),
+
+  /** Floors a confirmed violation must clear to be worth a notification. */
+  ALERT_MIN_NET_EDGE: z.coerce.number().min(0).max(1).default(0.01),
+  ALERT_MIN_NET_PROFIT: z.coerce.number().min(0).default(5),
+
+  /**
+   * How far back to look for resolutions still needing a follow-up. Bounded so
+   * that switching alerting on does not replay months of history.
+   */
+  ALERT_RESOLUTION_LOOKBACK_MS: z.coerce.number().int().min(60_000).default(86_400_000),
+
+  /** Ingest silence that counts as broken. */
+  ALERT_INGEST_STALE_MS: z.coerce.number().int().min(60_000).default(1_800_000),
+  /** Rate-limit responses per window that count as a spike. */
+  ALERT_RATE_LIMIT_HITS: z.coerce.number().int().min(1).default(50),
+  ALERT_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(60_000).default(600_000),
+  /** Coherence queue depth beyond which growth is a problem. */
+  ALERT_QUEUE_DEPTH: z.coerce.number().int().min(1).default(5),
+  /** Share of Gamma records with a parse issue that counts as a schema change. */
+  ALERT_PARSE_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0.05),
 });
 
 type Env = z.infer<typeof envSchema>;

@@ -43,6 +43,13 @@
       "when": 1785619904700,
       "tag": "0005_brave_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785625075918,
+      "tag": "0006_cooing_red_hulk",
+      "breakpoints": true
     }
   ]
 }

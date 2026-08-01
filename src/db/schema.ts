@@ -586,6 +586,75 @@ export const violations = pgTable(
   ],
 );
 
+/**
+ * One row per thing that has been alerted about, ever.
+ *
+ * This table *is* the deduplication. Holding it in memory would make "one alert
+ * per violation" mean "one alert per violation per process lifetime", so every
+ * deploy and every crash would re-announce everything still open — and with two
+ * replicas, both would announce it. Neither is a hypothetical: this service
+ * restarts on every deploy and the whole point of the coherence checker is that
+ * it runs continuously.
+ *
+ * `alert_key` is unique and carries the identity the dedup is *about*:
+ *
+ * - `violation:{violations.id}` — the episode, not the constraint. A constraint
+ *   that violates again next week is a new episode and deserves a new alert;
+ *   keying on the constraint would silence it forever.
+ * - `system:{name}` — one long-lived row per health signal, re-sent on cooldown.
+ * - `digest:{ISO hour}` — one per hour bucket, so a restart mid-hour cannot
+ *   send the same digest twice.
+ *
+ * `message_id` is why this is Postgres rather than a Redis TTL: resolving a
+ * violation has to edit or reply to the *original* Discord message, which means
+ * the id has to outlive the process that sent it.
+ */
+export const alertDeliveries = pgTable(
+  'alert_deliveries',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    /** Unique identity of the thing alerted about. See the table note. */
+    alertKey: text('alert_key').notNull(),
+    /** `violation` | `system` | `digest`. */
+    kind: text('kind').notNull(),
+    /** Where it went, so a second channel can be added without ambiguity. */
+    channel: text('channel').notNull().default('discord'),
+
+    /** Discord's message id, for editing or replying when the violation ends. */
+    messageId: text('message_id'),
+
+    firstSentAt: timestamp('first_sent_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSentAt: timestamp('last_sent_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Total messages sent for this key, including escalations. */
+    sendCount: numeric('send_count', { precision: 10, scale: 0 }).notNull().default('1'),
+
+    /**
+     * The value the last alert quoted — net edge for a violation.
+     *
+     * Escalation compares against *this*, not against the initial alert: an
+     * opportunity that grows 1.9x, is alerted, then grows another 1.9x has
+     * grown 3.6x in total and is worth saying again. Comparing to the original
+     * would fire on every check once the total ratio passed 2.
+     */
+    lastAlertValue: numeric('last_alert_value', { precision: 18, scale: 8 }),
+    escalations: numeric('escalations', { precision: 10, scale: 0 }).notNull().default('0'),
+
+    /** Set when the resolution follow-up has gone out, so it goes out once. */
+    resolvedNotifiedAt: timestamp('resolved_notified_at', { withTimezone: true }),
+
+    /** What was sent, for auditing a channel nobody was watching at the time. */
+    lastPayload: jsonb('last_payload'),
+  },
+  (table) => [
+    uniqueIndex('alert_deliveries_key').on(table.alertKey),
+    index('alert_deliveries_kind_idx').on(table.kind),
+    index('alert_deliveries_last_sent_idx').on(table.lastSentAt),
+  ],
+);
+
+export type AlertDeliveryRow = typeof alertDeliveries.$inferSelect;
+export type NewAlertDeliveryRow = typeof alertDeliveries.$inferInsert;
 export type MarketQuoteRow = typeof marketQuotes.$inferSelect;
 export type NewMarketQuoteRow = typeof marketQuotes.$inferInsert;
 export type ViolationRow = typeof violations.$inferSelect;

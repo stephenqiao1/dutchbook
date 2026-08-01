@@ -282,6 +282,49 @@ export const buildInfo = new Gauge(
   'Build metadata. Always 1; the labels carry the information.',
 );
 
+/**
+ * Gamma records seen, and records that carried at least one parse issue.
+ *
+ * The pair exists so a *rate* can be computed. Field-local degradation means a
+ * vendor schema change never crashes anything — records keep flowing with the
+ * changed field quietly nulled — so the ratio between these two counters is the
+ * only symptom there is.
+ */
+export const gammaRecords = new Counter(
+  'gamma_records_total',
+  'Gamma records parsed, by kind.',
+  [{ kind: 'market' }, { kind: 'event' }],
+);
+
+export const gammaParseIssues = new Counter(
+  'gamma_parse_issues_total',
+  'Gamma records where at least one field failed to parse and was nulled.',
+  [{ kind: 'market' }, { kind: 'event' }],
+);
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+export const alertsSent = new Counter(
+  'alerts_sent_total',
+  'Alert messages delivered, by kind.',
+  [{ kind: 'violation' }, { kind: 'escalation' }, { kind: 'resolution' }, { kind: 'system' }, { kind: 'digest' }],
+);
+
+/** Alerts the dedup withheld. High is healthy; it means repeats are working. */
+export const alertsSuppressed = new Counter(
+  'alerts_suppressed_total',
+  'Alerts withheld by deduplication, cooldown, or threshold.',
+  [{ reason: 'dedupe' }, { reason: 'threshold' }],
+);
+
+export const alertsFailed = new Counter(
+  'alerts_failed_total',
+  'Alerts that could not be delivered.',
+  [{}],
+);
+
 // ---------------------------------------------------------------------------
 // Coherence
 // ---------------------------------------------------------------------------
@@ -351,6 +394,11 @@ const ALL_METRICS: readonly Metric[] = [
   violationsConfirmed,
   violationsOpen,
   violationLifetimeMedian,
+  gammaRecords,
+  gammaParseIssues,
+  alertsSent,
+  alertsSuppressed,
+  alertsFailed,
 ];
 
 /**

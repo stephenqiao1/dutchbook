@@ -1,6 +1,7 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
+import { Alerter } from '../alerts/index.js';
 import { runCoherenceCheck, type CheckResult } from '../coherence/check.js';
 import { recordViolations, type RecordResult } from '../coherence/violations-store.js';
 import { config } from '../config.js';
@@ -63,6 +64,9 @@ export interface CoherenceJobsOptions {
   run?: (signal: AbortSignal) => Promise<CheckResult>;
   /** Persistence. Injected by tests; defaults to writing episodes to Postgres. */
   persist?: (result: CheckResult) => Promise<RecordResult>;
+  /** Alerting. Injected by tests; defaults to the Discord-or-log alerter. */
+  alerter?: Alerter;
+  announce?: (result: CheckResult) => Promise<void>;
   intervalMs?: number;
   timeoutMs?: number;
   attempts?: number;
@@ -110,6 +114,13 @@ export async function runCoherenceJob(
     run: (signal: AbortSignal) => Promise<CheckResult>;
     /** Injected so the schedule can be tested without a database. */
     persist: (result: CheckResult) => Promise<RecordResult>;
+    /**
+     * Alerting. Runs *after* persistence, never before: an alert names a
+     * violation episode by its database id, and the id does not exist until the
+     * episode is written. It is also allowed to fail without failing the check —
+     * a broken webhook must not stop the checker from checking.
+     */
+    announce?: (result: CheckResult) => Promise<void>;
   },
 ): Promise<CoherenceJobResult> {
   const controller = new AbortController();
@@ -140,6 +151,14 @@ export async function runCoherenceJob(
     const result = outcome.result;
 
     const recorded = await options.persist(result);
+
+    if (options.announce !== undefined) {
+      try {
+        await options.announce(result);
+      } catch (error) {
+        log.error({ error: describeError(error) }, 'alerting failed; the check itself succeeded');
+      }
+    }
 
     coherenceRuns.inc({ result: 'success' });
     coherenceDuration.observe((Date.now() - started) / 1000);
@@ -210,6 +229,16 @@ export async function startCoherenceJobs(
         db,
       ));
 
+  const alerter = options.alerter ?? new Alerter();
+  const announce =
+    options.announce ??
+    (async (result: CheckResult) => {
+      await alerter.afterCheck(result);
+      // Safe on every tick: the hour bucket is the dedup key, so only the first
+      // call in each hour sends anything.
+      await alerter.digest();
+    });
+
   const owned = options.connection === undefined;
   const connection = options.connection ?? redis.duplicate();
 
@@ -226,7 +255,7 @@ export async function startCoherenceJobs(
 
   const worker = new Worker(
     COHERENCE_QUEUE_NAME,
-    async (job) => runCoherenceJob(connection, job, { timeoutMs, lockTtlMs, run, persist }),
+    async (job) => runCoherenceJob(connection, job, { timeoutMs, lockTtlMs, run, persist, announce }),
     {
       ...shared,
       concurrency,
