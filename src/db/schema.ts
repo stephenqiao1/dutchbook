@@ -1,6 +1,8 @@
+import { sql } from 'drizzle-orm';
 import {
   bigserial,
   boolean,
+  check,
   index,
   jsonb,
   numeric,
@@ -220,6 +222,56 @@ export const rawPayloads = pgTable(
   ],
 );
 
+/**
+ * Directed relations between markets.
+ *
+ * A row asserts a logical constraint that holds by construction, not by
+ * correlation: `implies` from A to B means every world where A resolves Yes is
+ * a world where B resolves Yes, and therefore P(A) <= P(B). Edges derived from
+ * a threshold ladder carry confidence 1.0 because the entailment is arithmetic.
+ *
+ * `source` records how the edge was derived, so a later, less certain extractor
+ * can add rows here without its guesses being mistaken for entailments.
+ *
+ * The unique constraint is what makes re-extraction idempotent: rediscovering
+ * the same relation refreshes `last_seen_at` rather than inserting a duplicate.
+ */
+export const relations = pgTable(
+  'relations',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    fromConditionId: text('from_condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+    toConditionId: text('to_condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+
+    /** Relation kind. `implies` today; `excludes`/`equivalent` are foreseeable. */
+    type: text('type').notNull(),
+    /** Extractor that produced it, e.g. `ladder`. */
+    source: text('source').notNull(),
+
+    /** 1.0 for entailments. Reserved for extractors that are not certain. */
+    confidence: numeric('confidence', { precision: 5, scale: 4 }).notNull(),
+
+    /** Human-readable justification, carried so an edge can be audited later. */
+    rationale: text('rationale'),
+
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('relations_edge_key').on(table.fromConditionId, table.toConditionId, table.type),
+    index('relations_from_idx').on(table.fromConditionId),
+    index('relations_to_idx').on(table.toConditionId),
+    index('relations_source_idx').on(table.source),
+    // A market cannot imply itself, and an edge that says so is a bug upstream.
+    check('relations_no_self_edge', sql`${table.fromConditionId} <> ${table.toConditionId}`),
+  ],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
 export type MarketRow = typeof markets.$inferSelect;
@@ -230,3 +282,5 @@ export type PriceSnapshotRow = typeof priceSnapshots.$inferSelect;
 export type NewPriceSnapshotRow = typeof priceSnapshots.$inferInsert;
 export type RawPayloadRow = typeof rawPayloads.$inferSelect;
 export type NewRawPayloadRow = typeof rawPayloads.$inferInsert;
+export type RelationRow = typeof relations.$inferSelect;
+export type NewRelationRow = typeof relations.$inferInsert;

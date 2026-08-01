@@ -97,6 +97,9 @@ src/
   polymarket/
     gamma.ts      Gamma catalog client: keyset pagination, rate limiting, retries
     schemas.ts    Zod schemas that coerce Gamma's inconsistent payloads
+  relations/
+    ladders.ts         threshold-ladder extraction — pure, total, no I/O
+    store.ts           idempotent persistence of relation edges
   jobs/
     ingest-catalog.ts  catalog reconciliation: hash, diff, revise, reconcile
     catalog-queue.ts   BullMQ schedule, worker, dead letter queue, job metrics
@@ -459,6 +462,81 @@ warning naming the market id, the field, and the value:
 The only record the client discards is one with no usable `id`, since it can be
 neither stored nor meaningfully complained about. A single malformed market
 never halts a catalog crawl.
+
+## Relations
+
+[`src/relations/ladders.ts`](src/relations/ladders.ts) extracts **threshold
+ladders**: families of markets sharing a subject and a resolution date that
+differ only in a numeric threshold.
+
+```
+Will the price of XRP be above $2.70 on September 4 at 12PM ET?
+Will the price of XRP be above $2.73 on September 4 at 12PM ET?
+Will the price of XRP be above $2.76 on September 4 at 12PM ET?
+```
+
+Within a family the constraint is arithmetic, not statistical: a price above
+$2.76 is necessarily above $2.73. So the edges carry `confidence 1.0` — they are
+entailments, and `P(from) <= P(to)` is exact.
+
+The module is **pure and total**: no network, no LLM, no clock, no I/O, and it
+returns `null` rather than throwing on anything it cannot read. Persistence
+lives in [`store.ts`](src/relations/store.ts) precisely so the extractor can be
+tested exhaustively against real question strings with no database present.
+
+### Coverage
+
+Measured over the live catalog — **187,691 markets, 2026-08-01**:
+
+| | markets | share |
+| --- | ---: | ---: |
+| parse to a threshold rung | 27,184 | 14.48% |
+| **land in some ladder** | **16,602** | **8.85%** |
+
+1,769 ladders, 14,813 edges, median 11 rungs. `pnpm test` recomputes this from a
+committed corpus of whole events sampled from the same snapshot (8.50% — events
+rather than markets, because sampling markets independently shatters families
+and halves the measured number).
+
+**8.85% is below the 10–30% one might expect, and the reason is specific:** the
+largest numeric family in the catalog is not thresholds at all. 10,064 markets
+are phrased as *bands* — `between $104K and $105K` — and a band is not monotone.
+Landing in [104K, 105K] implies nothing about landing in [103K, 104K]. Reading
+the first number as a threshold would roughly double coverage while emitting
+implications that are false, so they are rejected. The remaining gap is exact
+values (`by 25 bps`), parlays, and races (`hit $80k or $100k first`) — all of
+which carry numbers but no monotone order.
+
+### What the parser refuses
+
+A false edge asserts a probability bound that is not true and corrupts anything
+built on it; a missed edge only costs coverage. Every ambiguity resolves to
+`null`:
+
+- **bands** — `between $X and $Y`, and dashed ranges like `25-30%`
+- **exact values** — `by 25 bps`, which partitions outcomes rather than ordering them
+- **multiple thresholds** — parlays and races, detected by a threshold surviving
+  in the subject after the matched clause is stripped
+- **subjectless markets without an event** — the catalog holds ~2,350 bare
+  `Over 231.5` lines; on subject-and-date alone every one sharing a date joins a
+  single group spanning unrelated games
+
+Grouping is exact-match on normalized subject, direction, unit, and date. No
+fuzzy matching. Event scoping is on by default and only ever *splits* a group.
+
+### Edges
+
+```ts
+{ fromConditionId, toConditionId, type: 'implies', source: 'ladder',
+  confidence: 1.0, rationale }
+```
+
+Adjacent rungs only — implication is transitive, so an 88-rung ladder is 87
+edges rather than 3,828. Pass `{ transitive: true }` for every ordered pair.
+
+Stored in `relations`, unique on `(from_condition_id, to_condition_id, type)`,
+so re-extraction refreshes `last_seen_at` instead of inserting duplicates.
+`first_seen_at` never moves, and a `CHECK` rejects self-edges.
 
 ## Metrics
 
