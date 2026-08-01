@@ -25,6 +25,15 @@ kill_timeout = "90s"
   # makes the next tick skip.
   CATALOG_INGEST_TIMEOUT_MS = "2700000"
 
+  # Off for the first deploy of the checker. Production's `relations` table
+  # still holds the pre-fix ladder edges, ~888 markets' worth of which point the
+  # wrong way (see "What the first live run found" in the README). A checker
+  # over a poisoned graph does not merely miss opportunities — it writes
+  # confident, well-formed CONFIRMED violations that are guaranteed losses. It
+  # gets switched on with `fly secrets set` once the graph has been re-extracted.
+  COHERENCE_CHECK_ENABLED = "false"
+  COHERENCE_CHECK_INTERVAL_MS = "60000"
+
 [deploy]
   # Runs on one machine before the new version takes traffic. A non-zero exit
   # aborts the deploy and leaves the previous version serving, which is what
