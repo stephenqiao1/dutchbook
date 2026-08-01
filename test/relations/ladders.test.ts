@@ -212,7 +212,7 @@ describe('purity and totality', () => {
     '$$$$$',
     'above $NaN',
     'above $Infinity',
-    ' ',
+    '\u0000',
     'above $999999999999999999999999999999',
     '−100',
     'a'.repeat(10_000),

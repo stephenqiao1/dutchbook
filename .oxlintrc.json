@@ -21,7 +21,7 @@
   },
   "overrides": [
     {
-      "files": ["test/**/*.ts", "scripts/**/*.mjs"],
+      "files": ["test/**/*.ts", "scripts/**/*.mjs", "scripts/**/*.mts"],
       "rules": {
         "no-console": "off",
         "typescript/no-explicit-any": "off",

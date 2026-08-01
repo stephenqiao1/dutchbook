@@ -11,6 +11,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  vector,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -326,6 +327,94 @@ export const relationGroupMembers = pgTable(
   ],
 );
 
+/** Dimensionality of the local sentence-transformer used for candidates. */
+export const EMBEDDING_DIMENSIONS = 384;
+
+/**
+ * A question embedding, for nearest-neighbour candidate generation.
+ *
+ * Comparing every pair of markets is O(n²) — at 300k markets that is 45 billion
+ * comparisons, and sending any meaningful fraction of them to a model is not a
+ * pipeline, it is a bill. So pairs are drawn from a vector index instead, and
+ * only the semantically close ones are ever considered.
+ *
+ * `content_hash` is the market's own hash: the embedding is recomputed only
+ * when the question actually changed, not on every crawl.
+ */
+export const marketEmbeddings = pgTable(
+  'market_embeddings',
+  {
+    conditionId: text('condition_id')
+      .primaryKey()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+    /** Model that produced it, so a model change can be detected and re-run. */
+    model: text('model').notNull(),
+    /** The market `content_hash` the vector was computed from. */
+    contentHash: text('content_hash').notNull(),
+    embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // HNSW over cosine distance: the index candidate generation reads.
+    index('market_embeddings_hnsw').using('hnsw', table.embedding.op('vector_cosine_ops')),
+    index('market_embeddings_model_idx').on(table.model),
+  ],
+);
+
+/**
+ * A model's suggestion about a pair — never an edge.
+ *
+ * Nothing here constrains any probability. A row becomes a relation only when a
+ * reviewer accepts it, and acceptance writes a separate row into `relations`
+ * with source `llm_reviewed`. That separation is the whole point: the model's
+ * output is evidence, and the verdict is the fact.
+ *
+ * The pair is stored in canonical order and uniquely constrained, so a pair is
+ * proposed at most once ever. A rejected pair stays rejected: re-running the
+ * pipeline finds the row and does not call the model again.
+ */
+export const relationProposals = pgTable(
+  'relation_proposals',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    /** Lexicographically smaller condition id. */
+    lowConditionId: text('low_condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+    highConditionId: text('high_condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+
+    /** `implies` | `implied_by` | `mutually_exclusive` | `complement` | `unrelated`. */
+    proposedType: text('proposed_type').notNull(),
+    /** Direction is relative to (low, high), so it survives canonical ordering. */
+    rationale: text('rationale').notNull(),
+    /** The model's own confidence, 0-1. Advisory only; it gates nothing. */
+    modelConfidence: numeric('model_confidence', { precision: 5, scale: 4 }).notNull(),
+    model: text('model').notNull(),
+    /** Cosine similarity that made the pair a candidate. */
+    similarity: numeric('similarity', { precision: 6, scale: 5 }),
+
+    /** `pending` | `accepted` | `rejected` | `skipped`. */
+    status: text('status').notNull().default('pending'),
+    /** Who decided. Null while pending. */
+    reviewedBy: text('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    /** Optional note from the reviewer, especially on a rejection. */
+    reviewNote: text('review_note'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One proposal per pair, ever. This is what makes a re-run cost nothing.
+    uniqueIndex('relation_proposals_pair').on(table.lowConditionId, table.highConditionId),
+    index('relation_proposals_status_idx').on(table.status),
+    index('relation_proposals_type_idx').on(table.proposedType),
+    check('relation_proposals_ordered', sql`${table.lowConditionId} < ${table.highConditionId}`),
+  ],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
 export type MarketRow = typeof markets.$inferSelect;
@@ -340,3 +429,7 @@ export type RelationRow = typeof relations.$inferSelect;
 export type NewRelationRow = typeof relations.$inferInsert;
 export type RelationGroupRow = typeof relationGroups.$inferSelect;
 export type NewRelationGroupRow = typeof relationGroups.$inferInsert;
+export type MarketEmbeddingRow = typeof marketEmbeddings.$inferSelect;
+export type NewMarketEmbeddingRow = typeof marketEmbeddings.$inferInsert;
+export type RelationProposalRow = typeof relationProposals.$inferSelect;
+export type NewRelationProposalRow = typeof relationProposals.$inferInsert;

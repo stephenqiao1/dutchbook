@@ -2,7 +2,9 @@ name: dutchbook
 
 services:
   postgres:
-    image: postgres:16
+    # pgvector, not stock postgres: the relation proposer indexes question
+    # embeddings for nearest-neighbour candidate generation.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: dutchbook

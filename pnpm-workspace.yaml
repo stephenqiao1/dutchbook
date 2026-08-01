@@ -10,3 +10,8 @@ allowBuilds:
   cpu-features: false
   protobufjs: false
   ssh2: false
+
+  # @huggingface/transformers runs the embedding model locally on CPU. Both of
+  # these place native binaries during install and are needed for that to work.
+  onnxruntime-node: true
+  sharp: true

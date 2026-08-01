@@ -468,7 +468,7 @@ export function groupLadders(
     // must supply that identity. Otherwise every bare `Over 231.5` on a given
     // date would join one group spanning unrelated games.
     if (parse.subject === '' && scope === '') continue;
-    const key = [scope, parse.subject, parse.direction, parse.unit, dateKey].join(' ');
+    const key = [scope, parse.subject, parse.direction, parse.unit, dateKey].join('\u0000');
     const existing = groups.get(key);
     if (existing === undefined) groups.set(key, { rungs: [{ market, parse }], parse, dateKey });
     else existing.rungs.push({ market, parse });

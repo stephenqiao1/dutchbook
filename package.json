@@ -14,7 +14,11 @@
     "test": "vitest run",
     "test:crash-drill": "node scripts/crash-drill.mjs",
     "job:ingest": "tsx src/jobs/trigger-ingest.ts",
+    "relations:extract": "tsx src/relations/extract-cli.ts",
     "relations:inspect": "tsx src/relations/inspect.ts",
+    "relations:propose": "tsx src/relations/propose-cli.ts",
+    "relations:calibrate": "tsx src/relations/calibrate.ts",
+    "relations:review": "tsx src/relations/review.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "oxlint --deny-warnings",
     "lint:fix": "oxlint --fix",
@@ -24,6 +28,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "bullmq": "^6.0.2",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
@@ -34,6 +39,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^26.1.2",
     "drizzle-kit": "^0.31.10",

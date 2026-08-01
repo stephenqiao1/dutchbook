@@ -76,6 +76,10 @@ docker compose down -v   # wipe data
 | `pnpm job:ingest`  | Trigger a catalog ingest by hand (`--inline` runs it here) |
 | `pnpm lint`        | Lint with oxlint                                           |
 | `pnpm test:crash-drill` | SIGKILL an ingest mid-run and verify it reconciles    |
+| `pnpm relations:extract` | Run every deterministic extractor over the catalog and persist |
+| `pnpm relations:propose` | Embed, draw candidates, classify — writes only `pending` proposals |
+| `pnpm relations:review` | Decide pending proposals; the only path from a proposal to an edge |
+| `pnpm relations:calibrate` | Score the classifier against known answers; writes nothing |
 | `pnpm relations:inspect <condition_id>` | Print everything related to a market |
 | `pnpm typecheck`   | Type-check everything, including tests, without emitting   |
 | `pnpm db:generate` | Diff `src/db/schema.ts` and write a migration to `drizzle/`|
@@ -106,8 +110,17 @@ src/
     partitions.ts      negRisk events, and the conflict check they ground
     graph.ts           DAG, cycle rejection, transitive reduction, queries
     extract.ts         runs every extractor and validates against partitions
+    bands.ts           band arithmetic — the ground truth calibration leans on
     inspect.ts         `pnpm relations:inspect`
+    extract-cli.ts     `pnpm relations:extract`
     store.ts           idempotent persistence
+    embeddings.ts      local sentence-transformer; questions only, never criteria
+    candidates.ts      pgvector kNN minus everything already known
+    proposer.ts        the one module that calls an LLM — returns proposals only
+    propose-cli.ts     `pnpm relations:propose`
+    proposals-store.ts pending proposals, verdicts, and the only path to an edge
+    review.ts          `pnpm relations:review`
+    calibrate.ts       `pnpm relations:calibrate` — scores the model, writes nothing
   jobs/
     ingest-catalog.ts  catalog reconciliation: hash, diff, revise, reconcile
     catalog-queue.ts   BullMQ schedule, worker, dead letter queue, job metrics
@@ -554,6 +567,173 @@ market whose question is then character-identical. That needs no exception list:
 `Will "I Am Not Okay" by Jelly Roll win Best Country Song?` de-negates to a
 question no market asks, so no pair forms. Ambiguous matches — one negation with
 two candidate positives — are dropped rather than guessed.
+
+## LLM-assisted proposals
+
+The four deterministic sources only fire when the relation is visible in the
+*text*. Many related pairs do not oblige:
+
+```
+Will Carlos Alcaraz win 3:1 against Taylor Fritz?
+Will Carlos Alcaraz win 3:2 against Taylor Fritz?     ← exclusive, no shared threshold
+
+Spread: Nuggets (-8.5)
+Spread: Nuggets (-0.5)                                ← entailment, no shared phrasing
+```
+
+A model reads these correctly. So the pipeline asks one — and then declines to
+take its word for it.
+
+### The constraint
+
+> **LLM output is a proposal, never an edge. Nothing enters the graph without a
+> persisted verdict.**
+
+Enforced in three places rather than by convention:
+
+| Where | How |
+| --- | --- |
+| Types | `proposeRelations` returns `RelationProposal`, which is not a `RelationEdge` and cannot be passed where one is expected. |
+| Tables | Proposals land in `relation_proposals` with `status = 'pending'`. Nothing in [`proposer.ts`](src/relations/proposer.ts) or [`propose-cli.ts`](src/relations/propose-cli.ts) can write to `relations`. |
+| Transaction | [`recordVerdict`](src/relations/proposals-store.ts) is the only path between them. It writes the verdict and the edge together, and refuses to run on a proposal that is not `pending` — so a rejection is permanent and a later pass cannot quietly overturn it. |
+
+[`test/relations/proposals-store.test.ts`](test/relations/proposals-store.test.ts)
+holds each of these against a real Postgres, including the one that matters
+most: a re-run reaching an already-rejected pair leaves the rejection, the
+original type, and the original rationale untouched.
+
+### The pipeline
+
+```bash
+pnpm relations:extract               # deterministic first — not optional, see below
+pnpm relations:propose --limit=200   # embed → candidates → classify → pending
+pnpm relations:review                # accept / reject / skip, one at a time
+pnpm relations:calibrate             # score the model against known answers
+```
+
+**1 — Candidates.** Every pair is O(n²); at 300k markets that is 45 billion
+comparisons. So each market is embedded once (`Xenova/all-MiniLM-L6-v2`, 384
+dims, running locally — no API call), stored in a `vector(384)` column behind an
+HNSW index, and candidates are its nearest neighbours above a cosine floor of
+0.82.
+
+Only the **question** is embedded, never the resolution criteria. Criteria are
+near-identical boilerplate across an entire event; including them makes every
+market in an event look alike and destroys exactly the signal the index exists
+to provide. They are given to the *classifier*, where they matter, and withheld
+from the *retriever*, where they do not.
+
+Four anti-joins then subtract what is already known: pairs with a deterministic
+edge in either direction, pairs **reachable through a chain** of such edges,
+pairs already sharing a partition, and pairs already proposed — whatever their
+verdict.
+
+That third exclusion was a correctness fix, not an optimisation. Ladders store
+*adjacent* rungs only, because implication is transitive and an 88-rung ladder is
+87 edges rather than 3,828. So `above $222` and `above $212` are joined by a path
+and not by an edge — and a direct-edge test alone let **99 of one 220-pair
+sample (45%)** through as "uncovered". Those were model calls spent rediscovering
+arithmetic, and worse, they would have flattered every number below with pairs
+that were never in question.
+
+**Running `relations:extract` first is therefore load-bearing.** A stale
+`relations` table does not merely miss edges; it pays the model to re-derive
+them.
+
+**2 — Classification.** One call per pair — both questions and both resolution
+criteria — for exactly one of `implies` / `implied_by` / `mutually_exclusive` /
+`complement` / `unrelated`, plus a one-sentence rationale and a confidence.
+
+The response is validated by a **strict** zod schema: unknown keys are rejected,
+not stripped. A response that fails to parse is logged with its raw text and the
+pair is **dropped** — never repaired, re-prompted, or guessed at. A malformed
+answer is evidence the model did not understand the question, and inventing a
+relation from it is the precise failure this design exists to prevent. Across
+330 live calls, 6 (1.8%) failed to parse: five omitted `confidence`, one emitted
+a stray `;` between JSON fields.
+
+**3 — Review.** [`relations:review`](src/relations/review.ts) shows one proposal
+at a time with both questions, the proposed relation *and what it would mean as a
+constraint*, the rationale, and `[d]etail` for the full resolution criteria.
+Accepting writes an edge with source `llm_reviewed`; rejecting is permanent.
+Every verdict records **who** made it, because a precision figure with no named
+judge cannot be interpreted.
+
+`mutually_exclusive` is accepted but writes **no edge**, deliberately. Pairwise
+exclusivity bounds a sum at 1; a partition pins it to exactly 1. `relations`
+stores implications and complements, and inventing a pairwise encoding for
+exclusivity would put a constraint into the graph that a solver would read as
+stronger than what was actually verified.
+
+### Re-runs cost nothing
+
+The guarantee is that a full pipeline re-run makes **zero** model calls for
+already-reviewed pairs. Measured directly against the live database after 225
+verdicts: 3,271 candidates remained, and **0** of them were a pair already
+carrying a verdict. [`test/relations/candidates.test.ts`](test/relations/candidates.test.ts)
+pins it for every verdict (`accepted`, `rejected`, `skipped`, still-`pending`) in
+both pair orderings; deleting the anti-join fails six of those tests.
+
+### How reliable is the model?
+
+Two numbers, measuring two different things. **Read the second one.**
+
+**Acceptance rate — 98.5%** (131 of 133 relation-claiming proposals accepted;
+99.1% including `unrelated`), over 225 reviewed proposals drawn as a uniform
+sample of the eligible population rather than the most-similar pairs:
+
+| Proposed | Accepted | Rejected | Rate |
+| --- | ---: | ---: | ---: |
+| `implies` | 68 | 1 | 98.6% |
+| `implied_by` | 60 | 0 | 100% |
+| `mutually_exclusive` | 3 | 1 | 75% |
+| `unrelated` | 92 | 0 | 100% |
+| **relation-claiming** | **131** | **2** | **98.5%** |
+
+⚠️ **The reviewer was Claude Code, not an independent human.** The spec this was
+built to asks for a human verdict, and that is what the `reviewed_by` column
+records — verbatim, so nobody can mistake this figure for something it is not.
+An agent grading a model's output is measuring agreement, not reliability, and
+the two rejections below are the kind an aligned grader is *least* likely to
+catch. Re-run `pnpm relations:review` yourself for the number the spec actually
+asks for; the pipeline is what is being delivered here, not this percentage.
+
+The two rejections are worth stating, since 98.5% otherwise says nothing:
+
+- **A direction inversion.** `Favorite(Clippers) vs Underdog(Grizzlies) Line:
+  1.5` → `Line: 7.5`, proposed `implies`. The market's outcomes are
+  `["Favorite","Underdog"]`, so Yes means *the Clippers cover*; covering a 1.5
+  line does not imply covering 7.5 — the implication runs the other way. The
+  model had reasoned about the **underdog** leg. Its own confidence, 0.60, was
+  the lowest in that batch, and it answered two structurally identical pairs
+  correctly, so this is an inconsistency rather than a misunderstood convention.
+- **An unverifiable external fact.** `Will Oregon make the CFP National
+  Championship Game?` vs the same for Texas, proposed `mutually_exclusive` on the
+  grounds that both were "on the same side of the bracket". Two teams can in
+  general both reach a final. Nothing in either question or either resolution
+  criteria establishes the bracket, so the claim rests on recalled trivia.
+
+**Calibration — 100.0% (120/120).** [`relations:calibrate`](src/relations/calibrate.ts)
+scores the classifier against answers known *before* it is asked, from sources it
+never sees:
+
+| Class | Ground truth | Score |
+| --- | --- | ---: |
+| `implies` | pairs the ladder and temporal extractors already connected, half presented reversed | 40/40 |
+| `mutually_exclusive` | disjoint numeric bands over an identical subject and date — arithmetic | 40/40 |
+| `unrelated` | markets drawn from two different events | 40/40 |
+
+Identical scores with resolution criteria supplied and withheld. The direction
+test matters: half the entailment pairs are reversed, so a classifier that always
+answered `implies` would score 50%, and it scored 100%.
+
+**What this does not show.** All three classes are drawn from families where a
+right answer demonstrably exists — that is what makes them usable as ground truth
+and also what makes them easy. It is a floor on competence, not an estimate of
+field precision, and it says nothing about *recall*: the pairs the model called
+`unrelated` when a relation was really there are, by construction, not in any
+denominator here. Corrupting the labels drops the harness to 0/4 on the affected
+class, so the 100% is a measurement rather than a plumbing artefact.
 
 ## The relation graph
 

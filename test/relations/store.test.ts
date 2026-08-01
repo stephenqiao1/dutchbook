@@ -56,7 +56,7 @@ describe.skipIf(!canRun)('saveRelationEdges', () => {
     let url = explicitUrl;
     if (url === undefined) {
       const { PostgreSqlContainer } = await import('@testcontainers/postgresql');
-      const container = await new PostgreSqlContainer('postgres:16').start();
+      const container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
       url = container.getConnectionUri();
       stopContainer = async () => {
         await container.stop();

@@ -20,7 +20,13 @@ export type RelationSource =
   /** Deadline nesting: `by June 30` entails `by December 31`. */
   | 'temporal'
   /** Mechanical negation: an explicit "not" over an otherwise identical question. */
-  | 'complement';
+  | 'complement'
+  /**
+   * Proposed by a model and *accepted by a reviewer*. The model alone cannot
+   * produce this source — `relation_proposals` holds its output, and only a
+   * recorded verdict promotes one here.
+   */
+  | 'llm_reviewed';
 
 export interface RelationEdge {
   readonly fromConditionId: string;
