@@ -4,12 +4,14 @@ import { config } from './config.js';
 import { closeDatabase } from './db/client.js';
 import { describeError } from './errors.js';
 import { startCatalogJobs, type CatalogJobs } from './jobs/catalog-queue.js';
+import { startCoherenceJobs, type CoherenceJobs } from './jobs/coherence-queue.js';
 import { logger } from './logger.js';
 import { closeRedis } from './redis.js';
 import { start, version } from './server.js';
 
 let app: FastifyInstance;
 let jobs: CatalogJobs | undefined;
+let coherence: CoherenceJobs | undefined;
 
 try {
   app = await start();
@@ -21,8 +23,19 @@ try {
     jobs = await startCatalogJobs();
   }
 
+  // Independent of the ingest, and independently switchable: the check is
+  // cheap enough to keep running while a full catalog crawl is paused.
+  if (config.COHERENCE_CHECK_ENABLED) {
+    coherence = await startCoherenceJobs();
+  }
+
   logger.info(
-    { version, nodeEnv: config.NODE_ENV, catalogIngest: config.CATALOG_INGEST_ENABLED },
+    {
+      version,
+      nodeEnv: config.NODE_ENV,
+      catalogIngest: config.CATALOG_INGEST_ENABLED,
+      coherenceCheck: config.COHERENCE_CHECK_ENABLED,
+    },
     'dutchbook started',
   );
 } catch (err) {
@@ -42,7 +55,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // reports a timeout and exits non-zero, rather than exiting 0 in silence.
   // The job drain gets its own budget on top — a catalog crawl takes minutes,
   // and killing one mid-batch every deploy would be worse than a slow deploy.
-  const budgetMs = config.SHUTDOWN_TIMEOUT_MS + (jobs === undefined ? 0 : config.JOB_DRAIN_TIMEOUT_MS);
+  const runningJobs = jobs !== undefined || coherence !== undefined;
+  const budgetMs = config.SHUTDOWN_TIMEOUT_MS + (runningJobs ? config.JOB_DRAIN_TIMEOUT_MS : 0);
   setTimeout(() => {
     logger.error({ timeoutMs: budgetMs }, 'shutdown timed out, forcing exit');
     process.exit(1);
@@ -54,12 +68,15 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     // the crawl, where waiting costs only the rest of one batch.
     await app.close();
 
-    if (jobs !== undefined) {
+    if (runningJobs) {
       logger.info({ drainTimeoutMs: config.JOB_DRAIN_TIMEOUT_MS }, 'draining in-flight jobs');
-      try {
-        await jobs.close();
-      } catch (err) {
-        logger.warn({ error: describeError(err) }, 'job drain did not complete cleanly');
+      // Settled, not all: a coherence worker that will not drain must not stop
+      // the catalog worker from finishing its transaction.
+      const drains = await Promise.allSettled([jobs?.close(), coherence?.close()]);
+      for (const drain of drains) {
+        if (drain.status === 'rejected') {
+          logger.warn({ error: describeError(drain.reason) }, 'job drain did not complete cleanly');
+        }
       }
     }
 

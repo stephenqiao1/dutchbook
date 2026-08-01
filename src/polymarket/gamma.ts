@@ -280,6 +280,46 @@ export class GammaClient {
     yield* this.#iterate('/events/keyset', 'event', parseEvent, options);
   }
 
+  /**
+   * Markets by condition id, in one request.
+   *
+   * `/markets` accepts a repeated `condition_ids` parameter, which is the only
+   * cheap way to price a scattered subset of the catalog: the alternative is
+   * one request per market, and the coherence screen needs hundreds every
+   * minute. Not a keyset endpoint, so no cursor is involved.
+   *
+   * The venue silently omits ids it does not recognise, so the caller gets back
+   * fewer markets than it asked for rather than an error. Match on
+   * `conditionId` rather than position.
+   */
+  async fetchMarketsByConditionIds(
+    conditionIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<Market[]> {
+    const wanted = [...new Set(conditionIds.filter((id) => id !== ''))];
+    if (wanted.length === 0) return [];
+
+    const url = new URL('/markets', this.#baseUrl);
+    for (const id of wanted) url.searchParams.append('condition_ids', id);
+
+    const body = await this.#fetchUrl(url.toString(), signal);
+    if (!Array.isArray(body)) {
+      throw new GammaSchemaError('expected an array of markets', url.pathname);
+    }
+
+    const markets: Market[] = [];
+    for (const [index, raw] of body.entries()) {
+      const parsed = parseMarket(raw);
+      if (!parsed.ok) {
+        this.#logger.warn({ index, reason: parsed.reason }, 'gamma market skipped: unidentifiable');
+        continue;
+      }
+      this.#reportIssues('market', parsed.value.id, parsed.issues);
+      markets.push(parsed.value);
+    }
+    return markets;
+  }
+
   async *#iterate<T extends { id: string }>(
     path: string,
     kind: string,
@@ -387,7 +427,11 @@ export class GammaClient {
   ): Promise<unknown> {
     const url = new URL(path, this.#baseUrl);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
-    const target = url.toString();
+    return this.#fetchUrl(url.toString(), signal);
+  }
+
+  /** The retry/rate-limit loop, against an already-built URL. */
+  async #fetchUrl(target: string, signal?: AbortSignal): Promise<unknown> {
 
     let attempt = 0;
     let throttled = false;

@@ -101,6 +101,38 @@ const envSchema = z.object({
    * runs, so this only bounds how long a crashed instance blocks the next run.
    */
   CATALOG_INGEST_LOCK_TTL_MS: z.coerce.number().int().min(5_000).max(600_000).default(60_000),
+
+  /**
+   * Whether the coherence checker runs. Separate from the ingest switch: the
+   * checker is far cheaper than a full crawl, so it is worth being able to keep
+   * scanning while the catalog crawl is paused.
+   */
+  COHERENCE_CHECK_ENABLED: booleanFlag.default(true),
+
+  /**
+   * How often the coherence check fires. Sixty seconds — fast enough that a
+   * violation lasting a couple of minutes is caught with several observations,
+   * which is the resolution the lifetime metric needs.
+   */
+  COHERENCE_CHECK_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+
+  /** Hard deadline for one check. Under the interval, so runs cannot pile up. */
+  COHERENCE_CHECK_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(45_000),
+
+  /** Lifetime of the cross-instance coherence lock. */
+  COHERENCE_CHECK_LOCK_TTL_MS: z.coerce.number().int().min(5_000).max(600_000).default(90_000),
+
+  /**
+   * Screening threshold in probability. Below this a gap is indistinguishable
+   * from the venue's tick size, so it is rounding rather than mispricing.
+   */
+  COHERENCE_EPSILON: z.coerce.number().min(0).max(1).default(0.005),
+
+  /**
+   * Constraints promoted to the expensive stage per run, worst first. Caps the
+   * order-book spend when a stale quote cache makes everything look violated.
+   */
+  COHERENCE_MAX_CONFIRMATIONS: z.coerce.number().int().min(1).max(500).default(25),
 });
 
 type Env = z.infer<typeof envSchema>;

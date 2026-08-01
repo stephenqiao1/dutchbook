@@ -282,6 +282,55 @@ export const buildInfo = new Gauge(
   'Build metadata. Always 1; the labels carry the information.',
 );
 
+// ---------------------------------------------------------------------------
+// Coherence
+// ---------------------------------------------------------------------------
+
+export const coherenceRuns = new Counter(
+  'coherence_runs_total',
+  'Coherence check runs, by outcome.',
+  [{ result: 'success' }, { result: 'failure' }, { result: 'skipped' }],
+);
+
+/** Buckets spanning a screen that found nothing to one that confirmed many. */
+export const coherenceDuration = new Histogram(
+  'coherence_duration_seconds',
+  'Wall-clock duration of one coherence check.',
+  [0.5, 1, 2, 5, 10, 20, 45, 90],
+);
+
+export const constraintsEvaluated = new Gauge(
+  'coherence_constraints_evaluated',
+  'Constraints evaluated by the cheap screen on the last run.',
+);
+
+export const violationsScreened = new Gauge(
+  'coherence_violations_screened',
+  'Constraints the last screen found violated beyond epsilon, before confirmation.',
+);
+
+/**
+ * Confirmed violations *opened*, cumulatively. A counter rather than a gauge
+ * because the interesting question is how many real opportunities have ever
+ * appeared, not how many happen to be open at this instant.
+ */
+export const violationsConfirmed = new Counter(
+  'coherence_violations_confirmed_total',
+  'Violations confirmed executable, cumulative.',
+  [{}],
+);
+
+export const violationsOpen = new Gauge(
+  'coherence_violations_open',
+  'Confirmed violations currently open.',
+);
+
+/** The headline. Null until a confirmed episode has closed, so it starts at -1. */
+export const violationLifetimeMedian = new Gauge(
+  'coherence_violation_lifetime_median_seconds',
+  'Median lifetime of closed confirmed violations. -1 before any have closed.',
+);
+
 const ALL_METRICS: readonly Metric[] = [
   ingestRuns,
   ingestErrors,
@@ -295,6 +344,13 @@ const ALL_METRICS: readonly Metric[] = [
   revisionsTotal,
   lastIngestSuccess,
   buildInfo,
+  coherenceRuns,
+  coherenceDuration,
+  constraintsEvaluated,
+  violationsScreened,
+  violationsConfirmed,
+  violationsOpen,
+  violationLifetimeMedian,
 ];
 
 /**

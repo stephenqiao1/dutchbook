@@ -463,6 +463,133 @@ export type MarketRow = typeof markets.$inferSelect;
 export type NewMarketRow = typeof markets.$inferInsert;
 export type MarketRevisionRow = typeof marketRevisions.$inferSelect;
 export type NewMarketRevisionRow = typeof marketRevisions.$inferInsert;
+/**
+ * Latest Gamma quote per market — the cheap screen's whole input.
+ *
+ * A cache, not a history: one row per market, overwritten. `price_snapshots` is
+ * where history lives. The split matters because the screen runs every 60
+ * seconds over every constraint in the graph and needs a single indexed read,
+ * not a `DISTINCT ON` over a growing time series.
+ *
+ * These are Gamma's numbers, which lag the book by seconds and describe no size
+ * at all. That is *fine here and only here*: this table exists to decide which
+ * constraints are worth spending an order-book request on. Nothing downstream
+ * of the screen is allowed to price against it.
+ */
+export const marketQuotes = pgTable(
+  'market_quotes',
+  {
+    conditionId: text('condition_id')
+      .primaryKey()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+
+    /**
+     * Probability of the *first* outcome, which is what every relation in
+     * `relations` is written about. For a Yes/No market that is Yes; for an
+     * Over/Under market it is Over; for a team market it is the named team.
+     */
+    yesPrice: numeric('yes_price', { precision: 18, scale: 8 }),
+    bestBid: numeric('best_bid', { precision: 18, scale: 8 }),
+    bestAsk: numeric('best_ask', { precision: 18, scale: 8 }),
+
+    /** Gamma's own freshness, when it offers one. */
+    quotedAt: timestamp('quoted_at', { withTimezone: true }),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+    source: text('source').notNull().default('gamma-market'),
+  },
+  (table) => [index('market_quotes_fetched_at_idx').on(table.fetchedAt)],
+);
+
+/**
+ * Coherence violations, as *episodes* rather than observations.
+ *
+ * The unit here is "this constraint was violated from T1 until T2", not "at
+ * T we saw a violation". A row is opened when a constraint starts violating,
+ * updated in place on every subsequent check, and closed when it stops. That
+ * is what makes lifetime measurable at all — a table of per-tick observations
+ * would need the episodes reconstructed afterwards, and reconstruction of a
+ * signal you could have recorded directly is how lifetimes get quietly wrong.
+ *
+ * A partial unique index enforces at most one *open* episode per constraint,
+ * so a checker that runs twice concurrently cannot fork one violation into two.
+ * The same constraint violating again next week is a new episode, which is
+ * correct: those are two separate opportunities, not one long one.
+ */
+export const violations = pgTable(
+  'violations',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    /**
+     * Stable identity of the constraint, e.g. `implies:4213` or `partition:87`.
+     * Derived from the relation or group id, so it survives a re-extraction
+     * that renumbers nothing.
+     */
+    constraintKey: text('constraint_key').notNull(),
+
+    /** `implies` | `complement` | `partition`. */
+    kind: text('kind').notNull(),
+
+    /** Relation ids behind this constraint. One for an edge, many for a group. */
+    relationIds: jsonb('relation_ids').$type<number[]>().notNull(),
+    /** `relation_groups.id` for a partition; null for a pairwise constraint. */
+    groupId: text('group_id'),
+    /** Every market the correcting trade touches. */
+    conditionIds: jsonb('condition_ids').$type<string[]>().notNull(),
+
+    /**
+     * `apparent` — violated on the screen, but no profitable trade exists.
+     * `confirmed` — a correcting trade with positive net edge at a real size.
+     * `closed`    — no longer violating; `resolved_at` is set.
+     */
+    status: text('status').notNull(),
+
+    /** Why an apparent violation was not confirmed. Null once confirmed. */
+    reason: text('reason'),
+
+    detectedAt: timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+
+    /** True if this episode was ever confirmed, even if it later degraded. */
+    everConfirmed: boolean('ever_confirmed').notNull().default(false),
+
+    /** Screen-stage magnitude at detection, from Gamma midpoints. */
+    screenMagnitude: numeric('screen_magnitude', { precision: 18, scale: 8 }),
+    /** Best magnitude seen across the episode. */
+    peakMagnitude: numeric('peak_magnitude', { precision: 18, scale: 8 }),
+
+    /**
+     * Best *net* edge per unit seen across the episode, after fees, and the
+     * size at which it was achieved. Peak rather than latest because the
+     * question a reader asks later is "was this ever worth taking".
+     */
+    peakNetEdge: numeric('peak_net_edge', { precision: 18, scale: 8 }),
+    peakSize: numeric('peak_size', { precision: 24, scale: 8 }),
+    /** Total dollars the peak trade would have returned: edge × size. */
+    peakNetProfit: numeric('peak_net_profit', { precision: 24, scale: 8 }),
+
+    /** The full trade construction at the peak — legs, prices, sizes, fees. */
+    trade: jsonb('trade'),
+
+    checks: bigserial('checks', { mode: 'number' }),
+  },
+  (table) => [
+    // At most one open episode per constraint. This is the whole lifetime model.
+    uniqueIndex('violations_one_open_per_constraint')
+      .on(table.constraintKey)
+      .where(sql`${table.resolvedAt} is null`),
+    index('violations_status_idx').on(table.status),
+    index('violations_detected_at_idx').on(table.detectedAt),
+    index('violations_resolved_at_idx').on(table.resolvedAt),
+    index('violations_key_idx').on(table.constraintKey),
+  ],
+);
+
+export type MarketQuoteRow = typeof marketQuotes.$inferSelect;
+export type NewMarketQuoteRow = typeof marketQuotes.$inferInsert;
+export type ViolationRow = typeof violations.$inferSelect;
+export type NewViolationRow = typeof violations.$inferInsert;
 export type PriceSnapshotRow = typeof priceSnapshots.$inferSelect;
 export type NewPriceSnapshotRow = typeof priceSnapshots.$inferInsert;
 export type RawPayloadRow = typeof rawPayloads.$inferSelect;

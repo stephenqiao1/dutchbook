@@ -139,6 +139,8 @@ function readNumber(digits: string, hadDollar: boolean, suffix: string): ParsedN
 interface ComparatorMatch {
   readonly direction: Direction;
   readonly inclusive: boolean;
+  /** True when the question word does not settle the direction on its own. */
+  readonly ambiguous?: boolean;
   readonly threshold: number;
   readonly unit: ThresholdUnit;
   /** Slice of the question the clause occupied, removed to leave the subject. */
@@ -153,6 +155,8 @@ const PREFIX_COMPARATORS: ReadonlyArray<{
   readonly words: string;
   readonly direction: Direction;
   readonly inclusive: boolean;
+  /** Direction is not determinable from the question; see the note below. */
+  readonly ambiguous?: boolean;
 }> = [
   { words: String.raw`at\s+least`, direction: 'gt', inclusive: true },
   { words: String.raw`greater\s+than\s+or\s+equal\s+to`, direction: 'gt', inclusive: true },
@@ -169,8 +173,19 @@ const PREFIX_COMPARATORS: ReadonlyArray<{
   // monotone the same way a level threshold is: reaching 120k entails
   // reaching 110k. "dip to $3,400" is min-over-the-window <= 3,400, monotone
   // downward. These are ~4.7k markets the level comparators alone all miss.
-  { words: String.raw`reach(?:es|ed)?(?:\s+to)?`, direction: 'gt', inclusive: true },
-  { words: String.raw`hits?`, direction: 'gt', inclusive: true },
+  //
+  // `reach` and `hit` are flagged AMBIGUOUS because the question text does not
+  // actually say which way the threshold points. "Will Trump's approval rating
+  // hit 35%?" reads as an upward move, but the venue's own criteria for that
+  // family say "equal to or BELOW the listed value" — so hitting 30% entails
+  // hitting 35%, the exact opposite of the assumption here. 888 live markets
+  // pair a hit/reach question with a below-style rule. Getting this backwards
+  // does not merely miss an edge: it emits an entailment that is false, and a
+  // downstream arbitrage built on it is a guaranteed loss rather than a
+  // guaranteed profit. So these two are resolved against the resolution
+  // criteria, and refused when the criteria do not say.
+  { words: String.raw`reach(?:es|ed)?(?:\s+to)?`, direction: 'gt', inclusive: true, ambiguous: true },
+  { words: String.raw`hits?`, direction: 'gt', inclusive: true, ambiguous: true },
   { words: String.raw`surpass(?:es|ed)?`, direction: 'gt', inclusive: false },
   { words: String.raw`cross(?:es|ed)?`, direction: 'gt', inclusive: false },
   { words: String.raw`climbs?\s+to`, direction: 'gt', inclusive: true },
@@ -207,7 +222,7 @@ const SUFFIX_COMPARATORS: ReadonlyArray<{
 function findComparator(question: string): ComparatorMatch | null {
   const candidates: ComparatorMatch[] = [];
 
-  for (const { words, direction, inclusive } of PREFIX_COMPARATORS) {
+  for (const { words, direction, inclusive, ambiguous } of PREFIX_COMPARATORS) {
     const re = new RegExp(String.raw`(?:${words})\s*(\$)?\s*(${NUMBER})(${UNIT_SUFFIX})`, 'i');
     const m = re.exec(question);
     if (m?.index === undefined) continue;
@@ -218,6 +233,7 @@ function findComparator(question: string): ComparatorMatch | null {
     candidates.push({
       direction,
       inclusive,
+      ...(ambiguous === true ? { ambiguous: true } : {}),
       threshold: number.value,
       unit: number.unit,
       start: m.index,
@@ -323,7 +339,10 @@ function tidySubject(text: string): string {
  * bands, compound comparators, questions with no numeric threshold, and
  * questions whose subject vanishes once the threshold is removed.
  */
-export function parseThresholdQuestion(question: string): ThresholdParse | null {
+export function parseThresholdQuestion(
+  question: string,
+  description?: string | null,
+): ThresholdParse | null {
   if (typeof question !== 'string') return null;
 
   const text = tidy(question);
@@ -333,8 +352,16 @@ export function parseThresholdQuestion(question: string): ThresholdParse | null 
     if (pattern.test(text)) return null;
   }
 
-  const comparator = findComparator(text);
-  if (comparator === null) return null;
+  const found = findComparator(text);
+  if (found === null) return null;
+
+  // An ambiguous touch verb only survives if the criteria settle the direction.
+  let comparator = found;
+  if (found.ambiguous === true) {
+    const fromCriteria = directionFromCriteria(description);
+    if (fromCriteria === null) return null;
+    comparator = { ...found, direction: fromCriteria };
+  }
 
   const withoutThreshold = `${text.slice(0, comparator.start)} ${text.slice(comparator.end)}`;
 
@@ -371,9 +398,36 @@ export function parseThresholdQuestion(question: string): ThresholdParse | null 
 // Grouping
 // ---------------------------------------------------------------------------
 
+/**
+ * Which way a threshold points, read from the venue's resolution criteria.
+ *
+ * Only consulted for questions whose wording is ambiguous — "hit", "reach" —
+ * where the market may be asking about a rise *or* a fall. The criteria are
+ * explicit where the question is not: Polymarket writes "equal to or below the
+ * listed value" or "at or above", and that sentence is the ground truth.
+ */
+export function directionFromCriteria(description: string | null | undefined): Direction | null {
+  if (typeof description !== 'string' || description.trim() === '') return null;
+  const text = description.toLowerCase();
+
+  const below = /\b(?:equal to or below|at or below|or below the listed|less than or equal to)\b/.test(text);
+  const above = /\b(?:equal to or above|at or above|or above the listed|greater than or equal to|or higher than the listed)\b/.test(text);
+
+  // Both or neither is not a determination. Refusing beats guessing: a wrong
+  // direction emits a false entailment, and a false entailment is worse than a
+  // missing one by exactly the size of the trade someone puts on behind it.
+  if (below === above) return null;
+  return below ? 'lt' : 'gt';
+}
+
 export interface LadderMarket {
   readonly conditionId: string;
   readonly question: string;
+  /**
+   * Resolution criteria. Required to orient an ambiguous "hit"/"reach"
+   * threshold; such markets are refused when it is absent.
+   */
+  readonly description?: string | null;
   /** Resolution timestamp, when known. Tightens grouping; never loosens it. */
   readonly endDate?: Date | string | null;
   /**
@@ -453,7 +507,7 @@ export function groupLadders(
   for (const market of markets) {
     if (typeof market?.conditionId !== 'string' || market.conditionId === '') continue;
 
-    const parse = parseThresholdQuestion(market.question);
+    const parse = parseThresholdQuestion(market.question, market.description);
     if (parse === null) continue;
 
     const dateKey = dateKeyOf(parse, market.endDate);
@@ -592,7 +646,7 @@ export function extractLadderRelations(
 
   let parsed = 0;
   for (const market of all) {
-    if (parseThresholdQuestion(market.question) !== null) parsed += 1;
+    if (parseThresholdQuestion(market.question, market.description) !== null) parsed += 1;
   }
 
   return {

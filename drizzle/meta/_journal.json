@@ -36,6 +36,13 @@
       "when": 1785617955594,
       "tag": "0004_safe_boom_boom",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785619904700,
+      "tag": "0005_brave_wallop",
+      "breakpoints": true
     }
   ]
 }

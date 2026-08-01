@@ -76,6 +76,8 @@ docker compose down -v   # wipe data
 | `pnpm job:ingest`  | Trigger a catalog ingest by hand (`--inline` runs it here) |
 | `pnpm lint`        | Lint with oxlint                                           |
 | `pnpm test:crash-drill` | SIGKILL an ingest mid-run and verify it reconciles    |
+| `pnpm coherence:check` | Run one coherence check by hand and print every trade construction |
+| `pnpm coherence:report` | Median violation lifetime and why apparent ones failed |
 | `pnpm pricing:verify <token_id> [size] [category]` | Price an order against the live book |
 | `pnpm relations:extract` | Run every deterministic extractor over the catalog and persist |
 | `pnpm relations:propose` | Embed, draw candidates, classify — writes only `pending` proposals |
@@ -105,6 +107,13 @@ src/
     gamma.ts      Gamma catalog client: keyset pagination, rate limiting, retries
     clob.ts       CLOB order book client: batched /books, normalised depth
     schemas.ts    Zod schemas that coerce Gamma's inconsistent payloads
+  coherence/
+    constraints.ts  the three constraints, their magnitudes, and the corrections
+    trade.ts        prices a correcting basket; refuses when it does not pay
+    check.ts        the two-stage screen-then-confirm orchestration
+    load.ts         constraints from the graph, quotes for the cheap screen
+    violations-store.ts  episodes, peaks, and lifetime
+    inspect-cli.ts  `pnpm coherence:check` / `--report`
   pricing/
     costs.ts      every fee and cost assumption, each with its source
     executable.ts walks the book level by level; partial fill, slippage, fees
@@ -131,6 +140,7 @@ src/
   jobs/
     ingest-catalog.ts  catalog reconciliation: hash, diff, revise, reconcile
     catalog-queue.ts   BullMQ schedule, worker, dead letter queue, job metrics
+    coherence-queue.ts the independent 60-second coherence schedule
     lock.ts            Redis mutual exclusion that spans deployed instances
     trigger-ingest.ts  `pnpm job:ingest`
   server.ts       Fastify app and routes
@@ -889,6 +899,131 @@ field precision, and it says nothing about *recall*: the pairs the model called
 `unrelated` when a relation was really there are, by construction, not in any
 denominator here. Corrupting the labels drops the harness to 0/4 on the affected
 class, so the 100% is a measurement rather than a plumbing artefact.
+
+## Coherence checking
+
+The point of everything above. A relation says two prices *must* stand in some
+order; the checker asks whether they do, and — when they do not — whether the
+correction can actually be executed at a profit.
+
+### The three constraints
+
+| Relation | Requires | Violation magnitude |
+| --- | --- | --- |
+| `implies(A, B)` | P(A) ≤ P(B) | P(A) − P(B), **signed** |
+| `complement(A, B)` | P(A) + P(B) = 1 | \|sum − 1\| |
+| `partition(S)` | Σ P over S = 1 | \|sum − 1\| |
+
+The `implies` magnitude stays signed on purpose: a satisfied entailment has a
+negative magnitude, which is slack. Taking an absolute value would report every
+comfortably-satisfied constraint as a large violation.
+
+### Every correction is a basket of buys
+
+Polymarket has no short. You cannot sell a token you do not hold — but every
+market has two complementary outcome tokens that together always pay exactly 1,
+so *selling Yes is buying No*. Each correction is therefore a basket of **buy**
+orders, each priced against its own real book, with a payout that is bounded
+below in every state the constraint permits:
+
+| Constraint | Direction | Basket | Worst-case payout |
+| --- | --- | --- | ---: |
+| `implies(A,B)` | over | No(A), Yes(B) | 1 |
+| `complement(A,B)` | over | No(A), No(B) | 1 |
+| `complement(A,B)` | under | Yes(A), Yes(B) | 1 |
+| `partition(S)` | under | Yes of every member | 1 |
+| `partition(S)` | over | No of every member | **n − 1** |
+
+The `implies` row is the non-obvious one. A entails B, so the state A=1,B=0
+cannot occur. Buy one No(A) and one Yes(B):
+
+```
+A=1, B=1 →  0 + 1  =  1
+A=0, B=1 →  1 + 1  =  2
+A=0, B=0 →  1 + 0  =  1
+A=1, B=0 →  excluded by the entailment
+```
+
+Never less than 1, so any cost below 1 is free money. That is exactly the naive
+"sell A, buy B" trade, expressed in instruments that exist at prices you can get.
+
+The `partition` over-priced row pays **n − 1**, not 1: exactly one member
+resolves Yes, so every *other* No pays out. Scoring a five-member partition
+against a payout of 1 would reject a genuinely profitable trade.
+
+### Two stages, in that order for a reason
+
+**Stage 1** evaluates every constraint against cached Gamma midpoints. One Gamma
+request covers 100 markets; the equivalent CLOB coverage is one order book per
+*token*, two per market. Running stage 2 over the whole graph would be four
+orders of magnitude more expensive and would spend the entire CLOB budget
+rediscovering that almost everything is priced consistently.
+
+**Stage 2** fetches live books for the survivors, builds the basket, walks each
+leg through [`executableCost`](src/pricing/executable.ts), and asks whether
+anything is left. A violation is **CONFIRMED** only if net profit clears a
+materiality floor; everything else is **APPARENT**, with the reason recorded.
+
+A partial fill is fatal, not merely worse: three legs of a four-leg partition is
+not three quarters of an arbitrage, it is an unhedged directional bet. A leg
+that cannot fill kills the size.
+
+**The two numbers that are not the same:**
+
+- `size` — the basket size that maximises *total net profit*.
+- `maxExecutableSize` — the brief's "max size before edge goes to zero".
+
+Pricing the trade at the second one reports every real mispricing as a $0.00
+opportunity, because that size is *defined* as break-even. The first live run of
+this checker did exactly that and confirmed five violations all worth precisely
+nothing.
+
+### Lifetime
+
+`violations` records **episodes**, not observations: one row per interval a
+constraint was violated, opened when it starts and closed when it stops. A
+partial unique index enforces at most one open episode per constraint. Peaks
+rather than latest values, ranked on total profit — a violation briefly worth
+$40 and now worth $2 should answer $40.
+
+`resolved_at − detected_at` over confirmed episodes gives the headline. Median,
+not mean: most violations close on the next tick and a few persist for hours, so
+a mean is dominated by the tail and describes nothing anyone experiences.
+
+Critically, an episode is closed only when the constraint is examined *and found
+satisfied*. A run that never looked at a constraint — a truncated stage 2, a
+missing quote — must not resolve it, or every lifetime it touches is wrong.
+
+### ⚠️ What the first live run found
+
+The checker confirmed a **$435 risk-free arbitrage** on Trump approval-rating
+markets. It was not risk-free. It was a bet that pays **zero** in one of three
+states, and the checker was right to derive it — because the *relation it was
+given* was false.
+
+The ladder extractor read `hit 35%` as an upward threshold. Polymarket's own
+resolution criteria for that family say:
+
+> "…resolve to Yes if Donald Trump's approval rating … is **equal to or below**
+> the listed value…"
+
+So falling to 30% entails having passed 35%: `hit 30%` implies `hit 35%`, the
+exact reverse of what was recorded. Under the true relation the basket's minimum
+payout is 0, not 1.
+
+**888 live markets pair a hit/reach question with a below-style rule.** Worse,
+Polymarket uses both directions in the same-looking family — the 2025 approval
+markets resolve "at or above", the 2026 ones "at or below" — so no amount of
+reading question text would have settled it.
+
+`hit` and `reach` are now flagged ambiguous and resolved against the resolution
+criteria, and **refused outright when the criteria do not say**. A missing edge
+costs an opportunity; a reversed one costs whatever someone traded behind it.
+
+This is what the "verify by hand" acceptance criterion is *for*. A reversed
+entailment does not look wrong anywhere upstream — it produces a confident,
+well-formed, fully-priced trade construction that happens to be a guaranteed
+loss.
 
 ## The relation graph
 

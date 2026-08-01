@@ -23,6 +23,7 @@ const log = createLogger('relations:extract');
 interface MarketRow extends Record<string, unknown> {
   condition_id: string;
   question: string;
+  description: string | null;
   event_id: string | null;
   end_date: Date | null;
   outcomes: string[] | null;
@@ -36,7 +37,7 @@ interface EventRow extends Record<string, unknown> {
 
 async function main(): Promise<number> {
   const marketRows = await db.execute<MarketRow>(sql`
-    select condition_id, question, event_id, end_date, outcomes
+    select condition_id, question, description, event_id, end_date, outcomes
     from markets
     where question is not null and question <> '' and missing_since is null
   `);
@@ -45,6 +46,7 @@ async function main(): Promise<number> {
   const markets: CatalogMarket[] = marketRows.map((row) => ({
     conditionId: row.condition_id,
     question: row.question,
+    description: row.description,
     eventId: row.event_id,
     endDate: row.end_date,
     outcomes: row.outcomes,

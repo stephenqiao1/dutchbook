@@ -22,6 +22,8 @@ const log = createLogger('relations');
 export interface CatalogMarket {
   readonly conditionId: string;
   readonly question: string;
+  /** Resolution criteria. Orients ambiguous "hit"/"reach" thresholds. */
+  readonly description?: string | null;
   readonly eventId?: string | null;
   readonly endDate?: Date | string | null;
   readonly outcomes?: readonly string[] | null;

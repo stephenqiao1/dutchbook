@@ -26,7 +26,13 @@ interface ParseCase {
   readonly unit: ThresholdUnit;
   readonly direction: Direction;
   readonly inclusive: boolean;
+  /** Resolution criteria, for questions whose wording does not fix a direction. */
+  readonly d?: string;
 }
+
+/** The two sentences Polymarket uses to fix a threshold's direction. */
+const ABOVE_RULE = 'This market will resolve to "Yes" if the value is equal to or above the listed value.';
+const BELOW_RULE = 'This market will resolve to "Yes" if the value is equal to or below the listed value.';
 
 const SHOULD_PARSE: readonly ParseCase[] = [
   // --- dollars, comma-grouped -------------------------------------------
@@ -49,8 +55,8 @@ const SHOULD_PARSE: readonly ParseCase[] = [
 
   // --- percentages -------------------------------------------------------
   { q: 'AI model scores ≥ 90% on FrontierMath Benchmark before 2027?', threshold: 90, unit: 'percent', direction: 'gt', inclusive: true },
-  { q: 'Will the 10-year Treasury yield hit 4.5% before 2027?', threshold: 4.5, unit: 'percent', direction: 'gt', inclusive: true },
-  { q: 'Will the 10-year Treasury yield hit 4.8% before 2027?', threshold: 4.8, unit: 'percent', direction: 'gt', inclusive: true },
+  { q: 'Will the 10-year Treasury yield hit 4.5% before 2027?', threshold: 4.5, unit: 'percent', direction: 'gt', inclusive: true, d: ABOVE_RULE },
+  { q: 'Will the 10-year Treasury yield hit 4.8% before 2027?', threshold: 4.8, unit: 'percent', direction: 'gt', inclusive: true, d: ABOVE_RULE },
   { q: "Will Joe Biden's approval rating be 49.0% or higher on September 1?", threshold: 49, unit: 'percent', direction: 'gt', inclusive: true },
   { q: 'Annual inflation above 2.2% in September?', threshold: 2.2, unit: 'percent', direction: 'gt', inclusive: false },
   { q: 'Will the AfD win less than 20% of the vote in the German election?', threshold: 20, unit: 'percent', direction: 'lt', inclusive: false },
@@ -81,15 +87,17 @@ const SHOULD_PARSE: readonly ParseCase[] = [
   { q: 'Will "Nobody 2" Opening Weekend Box Office be less than $11m?', threshold: 11_000_000, unit: 'usd', direction: 'lt', inclusive: false },
 
   // --- touch verbs: max/min over a window, still monotone ----------------
-  { q: 'Will Bitcoin reach $110,000 by January 31, 2025?', threshold: 110_000, unit: 'usd', direction: 'gt', inclusive: true },
-  { q: 'Will Solana reach $220 in June?', threshold: 220, unit: 'usd', direction: 'gt', inclusive: true },
-  { q: 'Will Ethereum hit $8,000.00 by March 31?', threshold: 8000, unit: 'usd', direction: 'gt', inclusive: true },
+  { q: 'Will Bitcoin reach $110,000 by January 31, 2025?', threshold: 110_000, unit: 'usd', direction: 'gt', inclusive: true, d: ABOVE_RULE },
+  { q: 'Will Solana reach $220 in June?', threshold: 220, unit: 'usd', direction: 'gt', inclusive: true, d: ABOVE_RULE },
+  { q: 'Will Ethereum hit $8,000.00 by March 31?', threshold: 8000, unit: 'usd', direction: 'gt', inclusive: true, d: ABOVE_RULE },
   { q: 'Will Bitcoin dip to $57,500 in October?', threshold: 57_500, unit: 'usd', direction: 'lt', inclusive: true },
   { q: 'Will Bitcoin dip to $75,000 by February 28, 2025?', threshold: 75_000, unit: 'usd', direction: 'lt', inclusive: true },
   { q: 'Will Ethereum dip to $3400 in August?', threshold: 3400, unit: 'usd', direction: 'lt', inclusive: true },
   { q: 'Will Google dip to $200 in November?', threshold: 200, unit: 'usd', direction: 'lt', inclusive: true },
-  { q: "Will Trump's approval rating hit 30% in 2025?", threshold: 30, unit: 'percent', direction: 'gt', inclusive: true },
-  { q: 'Will MrBeast hit 105.5 billion views by December 31?', threshold: 105_500_000_000, unit: 'count', direction: 'gt', inclusive: true },
+  // The real criteria for this family say BELOW, not above — see the
+  // disambiguation block further down for why that matters so much.
+  { q: "Will Trump's approval rating hit 30% in 2025?", threshold: 30, unit: 'percent', direction: 'lt', inclusive: true, d: BELOW_RULE },
+  { q: 'Will MrBeast hit 105.5 billion views by December 31?', threshold: 105_500_000_000, unit: 'count', direction: 'gt', inclusive: true, d: ABOVE_RULE },
   { q: 'Solana above $250 on September 5?', threshold: 250, unit: 'usd', direction: 'gt', inclusive: false },
 ];
 
@@ -127,8 +135,8 @@ const SHOULD_NOT_PARSE: readonly RejectCase[] = [
 ];
 
 describe('parseThresholdQuestion: real questions that must parse', () => {
-  it.each(SHOULD_PARSE)('$q', ({ q, threshold, unit, direction, inclusive }) => {
-    const parsed = parseThresholdQuestion(q);
+  it.each(SHOULD_PARSE)('$q', ({ q, threshold, unit, direction, inclusive, d }) => {
+    const parsed = parseThresholdQuestion(q, d);
 
     expect(parsed, 'expected a parse').not.toBeNull();
     if (parsed === null) return;
@@ -148,6 +156,70 @@ describe('parseThresholdQuestion: real questions that must parse', () => {
     expect(units).toEqual(new Set(['usd', 'percent', 'bps', 'temperature', 'count']));
     expect(directions).toEqual(new Set(['gt', 'lt']));
     expect(SHOULD_PARSE.length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('ambiguous touch verbs: direction comes from the criteria, never the wording', () => {
+  // The most expensive bug this project has produced. The coherence checker
+  // confirmed a $435 "risk-free" arbitrage on Trump approval markets that was
+  // in fact a bet which pays ZERO in one of three states — because the ladder
+  // extractor read "hit 35%" as an upward threshold when Polymarket's own
+  // criteria for that family say "equal to or BELOW the listed value".
+  //
+  // 888 live markets pair a hit/reach question with a below-style rule. A
+  // reversed entailment is not a missed edge; it is a false one, and everything
+  // downstream treats it as certainty.
+  const TRUMP =
+    'This market will resolve to "Yes" if Donald Trump\u2019s approval rating according to ' +
+    'Silver Bulletin is equal to or below the listed value for any date between January 1 ' +
+    'and December 31, 2026.';
+
+  it('reads a downward threshold out of a question that sounds upward', () => {
+    const parsed = parseThresholdQuestion("Will Trump's approval rating hit 35% in 2026?", TRUMP);
+    expect(parsed?.direction).toBe('lt');
+  });
+
+  it('reads an upward threshold when the criteria say above', () => {
+    const parsed = parseThresholdQuestion(
+      'Will Bitcoin reach $110,000 by January 31?',
+      'Resolves Yes if the price is equal to or above the listed value.',
+    );
+    expect(parsed?.direction).toBe('gt');
+  });
+
+  it('REFUSES an ambiguous question with no criteria at all', () => {
+    // Refusing beats guessing. A missing edge costs an opportunity; a reversed
+    // one costs whatever someone traded behind it.
+    expect(parseThresholdQuestion("Will Trump's approval rating hit 35% in 2026?")).toBeNull();
+    expect(parseThresholdQuestion('Will Bitcoin reach $110,000 by January 31?', '')).toBeNull();
+  });
+
+  it('REFUSES when the criteria say both or neither', () => {
+    expect(
+      parseThresholdQuestion(
+        'Will Bitcoin reach $110,000?',
+        'Resolves Yes if equal to or above the listed value, or equal to or below it.',
+      ),
+    ).toBeNull();
+    expect(parseThresholdQuestion('Will Bitcoin reach $110,000?', 'Resolves per the source.')).toBeNull();
+  });
+
+  it('leaves unambiguous wording alone, criteria or not', () => {
+    // "above" and "dips to" say which way they point; they must not start
+    // depending on a description that may not exist.
+    expect(parseThresholdQuestion('Solana above $250 on September 5?')?.direction).toBe('gt');
+    expect(parseThresholdQuestion('Will Bitcoin dip to $57,500 in October?')?.direction).toBe('lt');
+  });
+
+  it('orders a below-threshold ladder the other way round', () => {
+    // Hitting 30% (i.e. falling to 30) entails hitting 35%, not the reverse.
+    const lower = parseThresholdQuestion("Will Trump's approval rating hit 30% in 2026?", TRUMP);
+    const higher = parseThresholdQuestion("Will Trump's approval rating hit 35% in 2026?", TRUMP);
+
+    expect(lower?.direction).toBe('lt');
+    expect(higher?.direction).toBe('lt');
+    // For a `lt` ladder the *lower* threshold is the stronger claim.
+    expect(lower!.threshold).toBeLessThan(higher!.threshold);
   });
 });
 
@@ -181,7 +253,7 @@ describe('subject and date extraction', () => {
     ];
 
     for (const [question, expected] of cases) {
-      expect(parseThresholdQuestion(question)?.dateText, question).toBe(expected);
+      expect(parseThresholdQuestion(question, ABOVE_RULE)?.dateText, question).toBe(expected);
     }
   });
 
