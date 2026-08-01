@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:crash-drill": "node scripts/crash-drill.mjs",
     "job:ingest": "tsx src/jobs/trigger-ingest.ts",
+    "relations:inspect": "tsx src/relations/inspect.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "oxlint --deny-warnings",
     "lint:fix": "oxlint --fix",

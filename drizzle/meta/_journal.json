@@ -15,6 +15,13 @@
       "when": 1785604559446,
       "tag": "0001_stale_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785607660474,
+      "tag": "0002_tearful_wiccan",
+      "breakpoints": true
     }
   ]
 }

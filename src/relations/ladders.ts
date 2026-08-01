@@ -21,6 +21,10 @@
  * only costs coverage. Every ambiguity below resolves toward `null`.
  */
 
+import type { RelationEdge } from './types.js';
+
+export type { RelationEdge };
+
 /** Which way the family runs. */
 export type Direction = 'gt' | 'lt';
 
@@ -491,15 +495,6 @@ export function groupLadders(
 // ---------------------------------------------------------------------------
 // Edges
 // ---------------------------------------------------------------------------
-
-export interface RelationEdge {
-  readonly fromConditionId: string;
-  readonly toConditionId: string;
-  readonly type: 'implies';
-  readonly source: 'ladder';
-  readonly confidence: number;
-  readonly rationale: string;
-}
 
 export interface LadderEdgeOptions {
   /**

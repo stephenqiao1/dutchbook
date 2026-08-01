@@ -1,10 +1,9 @@
 /**
  * Relation extraction.
  *
- * `ladders.ts` is pure: it reads market questions and emits typed edges with no
- * I/O of any kind. `store.ts` is the only thing that writes them. Keeping the
- * two apart is what lets the extractor be tested exhaustively against real
- * question strings without a database anywhere near it.
+ * Every extractor is pure: it reads market text and event structure and emits
+ * typed relations with no I/O of any kind. `store.ts` is the only thing that
+ * writes, and `graph.ts` is the only thing that reasons over the result.
  */
 
 export {
@@ -19,9 +18,70 @@ export {
   type LadderMarket,
   type LadderRung,
   type GroupLaddersOptions,
-  type RelationEdge,
   type ThresholdParse,
   type ThresholdUnit,
 } from './ladders.js';
 
-export { findRelationsFrom, saveRelationEdges, type SaveRelationsResult } from './store.js';
+export {
+  extractTemporalRelations,
+  groupTemporalChains,
+  parseDeadlineQuestion,
+  temporalEdges,
+  type TemporalChain,
+  type TemporalExtraction,
+  type TemporalMarket,
+  type TemporalParse,
+} from './temporal.js';
+
+export {
+  extractComplements,
+  normalizeQuestion,
+  positiveForms,
+  type ComplementMarket,
+  type ExtractComplementsOptions,
+} from './complements.js';
+
+export {
+  extractPartitions,
+  findPartitionConflicts,
+  type PartitionConflict,
+  type PartitionEvent,
+  type PartitionMarket,
+} from './partitions.js';
+
+export {
+  RelationCycleError,
+  RelationGraph,
+  relatedTo,
+  transitiveReduction,
+  type BuildGraphOptions,
+  type Cycle,
+  type GraphStats,
+  type RelatedMarket,
+} from './graph.js';
+
+export {
+  buildRelationGraph,
+  extractAllRelations,
+  type CatalogEvent,
+  type CatalogMarket,
+  type ExtractionResult,
+} from './extract.js';
+
+export {
+  canonicalPair,
+  type RelationEdge,
+  type RelationGroup,
+  type RelationGroupSource,
+  type RelationGroupType,
+  type RelationSource,
+  type RelationType,
+} from './types.js';
+
+export {
+  findRelationsFrom,
+  saveRelationEdges,
+  saveRelationGroups,
+  type SaveGroupsResult,
+  type SaveRelationsResult,
+} from './store.js';

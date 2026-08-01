@@ -272,6 +272,60 @@ export const relations = pgTable(
   ],
 );
 
+/**
+ * Set-valued relations, which a pairwise table cannot express.
+ *
+ * A partition asserts that its members are mutually exclusive *and* exhaustive,
+ * so their Yes probabilities sum to exactly 1. Decomposing that into pairs
+ * loses the second half: pairwise exclusivity only bounds the sum at 1, and it
+ * is exhaustiveness — a property of the whole set — that pins it.
+ *
+ * `key` is derived from the source (`partition:neg-risk-event:<id>`), so
+ * re-extraction upserts the same group rather than accumulating copies.
+ */
+export const relationGroups = pgTable(
+  'relation_groups',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    key: text('key').notNull(),
+    /** `partition` today. */
+    type: text('type').notNull(),
+    /** `neg-risk-event` — the venue's own exclusivity flag. */
+    source: text('source').notNull(),
+    confidence: numeric('confidence', { precision: 5, scale: 4 }).notNull(),
+    rationale: text('rationale'),
+
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('relation_groups_key').on(table.key),
+    index('relation_groups_type_idx').on(table.type),
+  ],
+);
+
+/**
+ * Membership of a {@link relationGroups} set.
+ *
+ * Cascades from both sides: a group without its members is meaningless, and a
+ * market that no longer exists cannot be part of a partition of live outcomes.
+ */
+export const relationGroupMembers = pgTable(
+  'relation_group_members',
+  {
+    groupId: bigserial('group_id', { mode: 'number' })
+      .notNull()
+      .references(() => relationGroups.id, { onDelete: 'cascade' }),
+    conditionId: text('condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.conditionId] }),
+    index('relation_group_members_condition_idx').on(table.conditionId),
+  ],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
 export type MarketRow = typeof markets.$inferSelect;
@@ -284,3 +338,5 @@ export type RawPayloadRow = typeof rawPayloads.$inferSelect;
 export type NewRawPayloadRow = typeof rawPayloads.$inferInsert;
 export type RelationRow = typeof relations.$inferSelect;
 export type NewRelationRow = typeof relations.$inferInsert;
+export type RelationGroupRow = typeof relationGroups.$inferSelect;
+export type NewRelationGroupRow = typeof relationGroups.$inferInsert;
