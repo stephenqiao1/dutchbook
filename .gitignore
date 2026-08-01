@@ -10,3 +10,6 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+
+# Local run artifacts (worker logs, env for a long-running local check)
+.run/
