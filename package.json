@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:crash-drill": "node scripts/crash-drill.mjs",
     "job:ingest": "tsx src/jobs/trigger-ingest.ts",
+    "pricing:verify": "tsx scripts/verify-executable-cost.mts",
     "relations:extract": "tsx src/relations/extract-cli.ts",
     "relations:inspect": "tsx src/relations/inspect.ts",
     "relations:propose": "tsx src/relations/propose-cli.ts",

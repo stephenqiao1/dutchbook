@@ -1,7 +1,15 @@
-import { setTimeout as sleepFor } from 'node:timers/promises';
-
 import { describeError } from '../errors.js';
 import { createLogger } from '../logger.js';
+import {
+  attemptSignal,
+  defaultSleep,
+  fullJitterBackoff,
+  parseRetryAfter as parseRetryAfterHeader,
+  TokenBucket,
+  truncate,
+  type PolymarketLogger,
+  type Sleep,
+} from './http.js';
 import {
   keysetPageSchema,
   parseEvent,
@@ -43,9 +51,6 @@ const DEFAULT_MAX_RETRIES = 6;
 const DEFAULT_BASE_BACKOFF_MS = 250;
 const DEFAULT_MAX_BACKOFF_MS = 20_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-/** A `Retry-After` beyond this is treated as a stuck edge, not an instruction. */
-const MAX_RETRY_AFTER_MS = 60_000;
 
 const REQUEST_HEADERS: Readonly<Record<string, string>> = {
   accept: 'application/json',
@@ -163,10 +168,7 @@ export interface RateLimitEvent {
 }
 
 /** The slice of a pino logger this client uses. */
-export interface GammaLogger {
-  debug(obj: object, msg: string): void;
-  warn(obj: object, msg: string): void;
-}
+export type GammaLogger = PolymarketLogger;
 
 export interface GammaClientOptions {
   baseUrl?: string;
@@ -195,7 +197,7 @@ export interface GammaClientOptions {
   /** Injectable monotonic clock for the token bucket. */
   now?: () => number;
   /** Injectable sleep, for both backoff and rate limiting. */
-  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  sleep?: Sleep;
 }
 
 export interface IterateOptions {
@@ -218,68 +220,11 @@ export interface IterateOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Classic token bucket. `take()` resolves once a token is available, so callers
- * queue rather than burst.
+ * Re-exported so existing callers and tests keep one import site. The
+ * implementation is shared with every other Polymarket client — see
+ * {@link ./http.ts} for why that sharing is load-bearing rather than tidiness.
  */
-class TokenBucket {
-  readonly #capacity: number;
-  readonly #tokensPerMs: number;
-  readonly #now: () => number;
-  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
-
-  #tokens: number;
-  #updatedAt: number;
-
-  constructor(
-    requestsPerSecond: number,
-    capacity: number,
-    now: () => number,
-    sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
-  ) {
-    this.#capacity = Math.max(1, capacity);
-    this.#tokensPerMs = requestsPerSecond / 1_000;
-    this.#now = now;
-    this.#sleep = sleep;
-    this.#tokens = this.#capacity;
-    this.#updatedAt = now();
-  }
-
-  async take(signal?: AbortSignal): Promise<void> {
-    for (;;) {
-      const now = this.#now();
-      this.#tokens = Math.min(
-        this.#capacity,
-        this.#tokens + Math.max(0, now - this.#updatedAt) * this.#tokensPerMs,
-      );
-      this.#updatedAt = now;
-
-      if (this.#tokens >= 1) {
-        this.#tokens -= 1;
-        return;
-      }
-
-      const waitMs = Math.max(1, Math.ceil((1 - this.#tokens) / this.#tokensPerMs));
-      await this.#sleep(waitMs, signal);
-    }
-  }
-}
-
-/**
- * `Retry-After` as milliseconds. The header is either delta-seconds or an
- * HTTP-date; both are accepted, and both are capped.
- */
-export function parseRetryAfter(header: string | null, now: () => number = Date.now): number | null {
-  if (header === null) return null;
-
-  const text = header.trim();
-  if (text === '') return null;
-
-  const seconds = Number(text);
-  const ms = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(text) - now();
-
-  if (!Number.isFinite(ms) || ms < 0) return null;
-  return Math.min(ms, MAX_RETRY_AFTER_MS);
-}
+export const parseRetryAfter = parseRetryAfterHeader;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -297,7 +242,7 @@ export class GammaClient {
   readonly #onRawResponse: RawResponseHook | undefined;
   readonly #onRateLimited: ((event: RateLimitEvent) => void) | undefined;
   readonly #random: () => number;
-  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly #sleep: Sleep;
 
   constructor(options: GammaClientOptions = {}) {
     const requestsPerSecond = options.requestsPerSecond ?? DEFAULT_REQUESTS_PER_SECOND;
@@ -312,7 +257,7 @@ export class GammaClient {
     this.#onRawResponse = options.onRawResponse;
     this.#onRateLimited = options.onRateLimited;
     this.#random = options.random ?? Math.random;
-    this.#sleep = options.sleep ?? ((ms, signal) => sleepFor(ms, undefined, { signal }));
+    this.#sleep = options.sleep ?? defaultSleep;
 
     this.#bucket = new TokenBucket(
       requestsPerSecond,
@@ -569,17 +514,18 @@ export class GammaClient {
     );
   }
 
-  /** Full jitter: `random() * min(cap, base * 2^attempt)`, floored by `Retry-After`. */
   #backoff(attempt: number, retryAfterMs: number | null): number {
-    const ceiling = Math.min(this.#maxBackoffMs, this.#baseBackoffMs * 2 ** attempt);
-    const jittered = this.#random() * ceiling;
-    return Math.ceil(Math.max(retryAfterMs ?? 0, jittered));
+    return fullJitterBackoff(
+      attempt,
+      retryAfterMs,
+      this.#baseBackoffMs,
+      this.#maxBackoffMs,
+      this.#random,
+    );
   }
 
-  /** Per-attempt timeout, combined with the caller's cancellation. */
   #attemptSignal(signal: AbortSignal | undefined): AbortSignal {
-    const timeout = AbortSignal.timeout(this.#timeoutMs);
-    return signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+    return attemptSignal(signal, this.#timeoutMs);
   }
 
   async #emitRaw(raw: RawResponse): Promise<void> {
@@ -593,10 +539,6 @@ export class GammaClient {
       );
     }
   }
-}
-
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
 // ---------------------------------------------------------------------------

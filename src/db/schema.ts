@@ -157,13 +157,27 @@ export const marketRevisions = pgTable(
   ],
 );
 
+/** One persisted order-book level. Prices and sizes as numbers, in USDC/shares. */
+export interface DepthLevel {
+  readonly price: number;
+  readonly size: number;
+}
+
 /**
- * Point-in-time top-of-book per outcome token.
+ * Point-in-time order book per outcome token, with depth.
  *
  * Keyed by (condition_id, token_id, ts) so re-running a collector over a window
  * it already covered overwrites rather than duplicates. `numeric` rather than
- * float: these are prices, and float drift in a book is not worth the bytes
- * saved.
+ * float for the scalar quotes: these are prices, and float drift in a book is
+ * not worth the bytes saved.
+ *
+ * **The depth columns are the point of this table.** A midpoint is not a price
+ * anyone can trade at, and a stored midpoint cannot answer the only question
+ * that matters later — "what would 500 shares actually have cost at that
+ * moment?" Keeping the top ten levels per side means a historical violation can
+ * be re-priced against the depth that really existed, rather than against a
+ * number that implies infinite liquidity at the touch. Recording only the
+ * midpoint would make every past opportunity look executable.
  */
 export const priceSnapshots = pgTable(
   'price_snapshots',
@@ -180,6 +194,34 @@ export const priceSnapshots = pgTable(
     bid: numeric('bid', { precision: 18, scale: 8 }),
     ask: numeric('ask', { precision: 18, scale: 8 }),
     mid: numeric('mid', { precision: 18, scale: 8 }),
+
+    /** `ask - bid`. Null on a one-sided book, which has no spread. */
+    spread: numeric('spread', { precision: 18, scale: 8 }),
+
+    /**
+     * Top ten levels, best-first (bids descending, asks ascending) — the same
+     * order {@link OrderBook} guarantees, so a stored book walks identically to
+     * a live one with no re-sorting at read time.
+     */
+    bids: jsonb('bids').$type<DepthLevel[]>(),
+    asks: jsonb('asks').$type<DepthLevel[]>(),
+
+    /** Total shares resting on each side, across the *whole* book, not just the
+     * ten stored levels — so truncation is visible rather than silent. */
+    bidDepth: numeric('bid_depth', { precision: 24, scale: 8 }),
+    askDepth: numeric('ask_depth', { precision: 24, scale: 8 }),
+
+    /**
+     * The venue's own book timestamp, distinct from `ts`.
+     *
+     * `ts` is when we recorded it; this is when the venue built it. The gap
+     * between them is the staleness that makes a Gamma-derived price an
+     * illusion, and it is only measurable if both are kept.
+     */
+    bookTs: timestamp('book_ts', { withTimezone: true }),
+
+    /** The venue's book hash, for detecting an unchanged book across polls. */
+    bookHash: text('book_hash'),
 
     /** Where the quote came from, e.g. `clob-book` or `gamma-market`. */
     source: text('source').notNull(),

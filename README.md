@@ -76,6 +76,7 @@ docker compose down -v   # wipe data
 | `pnpm job:ingest`  | Trigger a catalog ingest by hand (`--inline` runs it here) |
 | `pnpm lint`        | Lint with oxlint                                           |
 | `pnpm test:crash-drill` | SIGKILL an ingest mid-run and verify it reconciles    |
+| `pnpm pricing:verify <token_id> [size] [category]` | Price an order against the live book |
 | `pnpm relations:extract` | Run every deterministic extractor over the catalog and persist |
 | `pnpm relations:propose` | Embed, draw candidates, classify — writes only `pending` proposals |
 | `pnpm relations:review` | Decide pending proposals; the only path from a proposal to an edge |
@@ -100,8 +101,14 @@ src/
     schema.ts     Drizzle tables: events, markets, revisions, prices, raw payloads
     client.ts     Drizzle instance, connection pool, health probe
   polymarket/
+    http.ts       token bucket, backoff, retry — shared by every Polymarket client
     gamma.ts      Gamma catalog client: keyset pagination, rate limiting, retries
+    clob.ts       CLOB order book client: batched /books, normalised depth
     schemas.ts    Zod schemas that coerce Gamma's inconsistent payloads
+  pricing/
+    costs.ts      every fee and cost assumption, each with its source
+    executable.ts walks the book level by level; partial fill, slippage, fees
+    snapshots.ts  persists books to price_snapshots with full depth
   relations/
     types.ts           shared vocabulary: pairwise edges and set-valued groups
     ladders.ts         threshold ladders — pure, total, no I/O
@@ -483,6 +490,154 @@ warning naming the market id, the field, and the value:
 The only record the client discards is one with no usable `id`, since it can be
 neither stored nor meaningfully complained about. A single malformed market
 never halts a catalog crawl.
+
+### Polymarket CLOB
+
+[`src/polymarket/clob.ts`](src/polymarket/clob.ts) reads the live order book.
+Read-only: no auth, no wallet, no order placement.
+
+**Gamma's prices are not tradeable.** They lag the book by seconds, and a
+midpoint is not a price you can transact at even when current — it ignores the
+spread and it ignores whether there is any size behind it. A violation computed
+from Gamma midpoints is usually an illusion, so everything downstream prices
+against real depth.
+
+Rate limiting, backoff, and retry are *literally* the Gamma client's, extracted
+into [`http.ts`](src/polymarket/http.ts) and imported by both. Polymarket's
+budget is enforced per-IP at the Cloudflare edge and is therefore shared across
+every client in this process: two independent token buckets would each believe
+it was under budget while together exceeding it.
+
+The client batches through `POST /books` rather than looping `/book`. The two
+have nearly the same per-request budget — 500 vs 1,500 req / 10s — so batching
+buys up to two orders of magnitude against the same limit. Note that `/books`
+has its own allowance, far tighter than the 9,000 req / 10s general CLOB
+budget; the tighter one is what the token bucket targets.
+
+#### Three ways the live API will silently corrupt your prices
+
+Each was found by probing the running service, and each is pinned by a test.
+None of them throws — they produce confident, wrong numbers.
+
+| What it does | What it costs you |
+| --- | --- |
+| **Levels arrive worst-first.** `bids` ascend and `asks` descend, so on *both* sides the best price is the **last** element. | Reading `bids[0]` as the top of book returned **0.001** against a real best bid of **0.024** on a live market. |
+| **`POST /books` answers out of order.** A six-token request came back permuted. | Mapping responses to requests positionally attributes every book to the wrong market. Responses are keyed by `asset_id`. |
+| **Unknown tokens are dropped, not rejected.** Six requested, five returned, HTTP 200. | A caller assuming one response per request shifts its own bookkeeping. `fetchBooks` returns a `missing` list — always check it. |
+
+The client sorts both sides explicitly rather than trusting the wire order, and
+drops levels that cannot be traded against (unparseable numbers, non-positive
+sizes, prices outside `(0, 1]`) rather than coercing them to zero — a
+zero-priced level looks like free depth to the book walker.
+
+## Pricing against real depth
+
+### `executableCost(book, side, size)`
+
+[`src/pricing/executable.ts`](src/pricing/executable.ts) walks the book level by
+level. **No level is assumed to absorb the order**, depth running out is a
+partial fill rather than an error or an extrapolation, and slippage is measured
+against the **touch** rather than the midpoint — measuring against the midpoint
+silently folds half the spread into "slippage" and makes a wide market look deep.
+
+Pure and total: no I/O, no clock, and no throwing. A nonsensical request returns
+a zero fill, because a pricing function that throws inside a sweep over
+thousands of markets is one that stops the sweep.
+
+Here is the whole argument for the module, from a live market on 2026-08-01 —
+buying 500 shares of a book whose touch is 65¢:
+
+```
+  best ask         65.00¢     spread 4.00¢     ask depth 155.5 over 5 levels
+
+  filled           155.5 / 500  (PARTIAL — book too thin)
+  avg price        68.96¢
+  total (no fee)   $107.23
+  slippage vs ask  6.090%
+  levels consumed  5
+
+     65.00¢ ×    60      69.00¢ ×  20
+     66.00¢ ×  41.5      96.00¢ ×  14   ← the last 14 shares
+     68.00¢ ×    20
+```
+
+Quoting the touch would have claimed 500 shares for $325. The truth is 155.5
+shares for $107.23, with the final fill 48% worse than the top of book. The
+naive number is wrong about the price *and* the quantity.
+
+### Fees and costs
+
+[`src/pricing/costs.ts`](src/pricing/costs.ts) holds every fee, cost, and
+execution assumption, each with its source and the date it was checked. Nothing
+else in the pricing path is allowed to hardcode one.
+
+Polymarket charges takers `fee = C × feeRate × p × (1 - p)`, in USDC; makers are
+never charged. Two consequences the code depends on:
+
+- **It must be applied per level, not at the average price.** `p(1-p)` is
+  concave, so charging once at the average *systematically understates* the fee
+  on an order spanning a range of prices.
+- **It is symmetric about 0.5 in dollars but not as a fraction of notional** —
+  that fraction is `feeRate × (1 - p)`, so at 5¢ and a 5% rate the fee is 4.75%
+  of the amount staked.
+
+Two things the API will mislead you about:
+
+- **`base_fee` is not a rate.** `GET /fee-rate/{token_id}` returns an integer
+  the spec calls "basis points"; the live value is `1000`, which read literally
+  is 10% — between 1.4× and 2.5× every published rate. Sampling 2,000 markets,
+  it takes exactly two values: `0` (84 markets, precisely the documented
+  geopolitics carve-out — Duma seats, Greenland, Maduro, Iran) and `1000`
+  (1,916, spanning categories the schedule prices at 0.04, 0.05, *and* 0.07). A
+  field that cannot distinguish 0.04 from 0.07 is not carrying the rate. It is
+  treated as a fee-enabled flag: its zero is authoritative, its magnitude ignored.
+- **The fee category is not published anywhere.** Neither CLOB nor Gamma exposes
+  one; Gamma has free-form tags (a Fed market carries `Fed`, `Economic Policy`,
+  `Jerome Powell`), none of which is one of the eleven categories in the
+  schedule. So the category must come from the caller, and the default when it
+  does not is 0.07 — the *highest* rate, so an unknown market looks worse than it
+  is rather than better. Notional and average price are exact regardless; only
+  the fee line moves.
+
+### Snapshots keep depth, not midpoints
+
+`price_snapshots` stores the **top ten levels on both sides**, the full-book
+depth totals, the spread, and the venue's own book timestamp alongside our
+capture time — the gap between those two *is* the staleness that makes Gamma
+unusable, and it is only measurable if both are kept.
+
+A stored row re-prices through the same `executableCost` as a live book, with no
+special case: `bookFromSnapshot` returns an `OrderBook`. That is the entire
+point. A history of midpoints cannot answer "what would 500 shares have cost at
+that moment", and would make every past opportunity look executable at any size.
+
+Storing ten levels while recording depth over the *whole* book means truncation
+is visible rather than silent — a re-price against a truncated snapshot
+under-promises, never over-promises.
+
+### Verifying against the venue
+
+```bash
+pnpm pricing:verify <token_id> [size] [category]
+```
+
+Fetches the live book, prices the order, and prints the numbers a Polymarket
+order ticket shows so the two can be compared directly. It runs a second,
+deliberately independent calculation straight off the raw JSON — sorting nothing
+and sharing no code with `executableCost` — because a walker checked only
+against itself proves nothing.
+
+Verified on 2026-08-01 against *Fed rate hike in 2026?* (Yes), buying 60,000
+shares so the order spans levels:
+
+```
+45,786.81 × 0.68 = 31,135.0308
+14,213.19 × 0.69 =  9,807.1011
+                   ───────────
+                   40,942.1319   avg 68.24¢ vs a 68¢ touch, 0.348% slippage
+```
+
+Both calculations agree to the cent, and the arithmetic checks by hand.
 
 ## Relations
 
