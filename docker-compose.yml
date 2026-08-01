@@ -1,0 +1,40 @@
+name: dutchbook
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dutchbook
+      POSTGRES_PASSWORD: dutchbook
+      POSTGRES_DB: dutchbook
+    ports:
+      - '5432:5432'
+    volumes:
+      - dutchbook_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dutchbook -d dutchbook']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # AOF keeps queued BullMQ jobs across a container restart.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - dutchbook_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  dutchbook_postgres_data:
+  dutchbook_redis_data:

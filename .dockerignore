@@ -1,0 +1,19 @@
+# Everything the image builds for itself, or must never contain.
+node_modules
+dist
+coverage
+
+.git
+.github
+.env
+.env.*
+!.env.example
+
+test
+drizzle.config.ts.timestamp*
+*.log
+.DS_Store
+.vscode
+.idea
+README.md
+docker-compose.yml

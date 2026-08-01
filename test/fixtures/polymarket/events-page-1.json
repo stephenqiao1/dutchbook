@@ -1,0 +1,77 @@
+{
+  "data": [
+    {
+      "id": "12345",
+      "ticker": "fed-decision-march",
+      "slug": "fed-decision-march",
+      "title": "Fed decision in March",
+      "description": "What will the FOMC do at the March meeting?",
+      "startDate": "2025-02-01T00:00:00Z",
+      "creationDate": "2025-01-30T13:58:02.114Z",
+      "endDate": "2025-03-20T21:00:00Z",
+      "createdAt": "2025-01-30 13:58:02.114+00",
+      "updatedAt": "2025-03-21T02:11:09.004Z",
+      "image": "https://polymarket-upload.s3.us-east-2.amazonaws.com/fed.png",
+      "icon": "https://polymarket-upload.s3.us-east-2.amazonaws.com/fed.png",
+      "active": true,
+      "closed": true,
+      "archived": false,
+      "restricted": true,
+      "new": false,
+      "featured": true,
+      "negRisk": true,
+      "enableOrderBook": true,
+      "liquidity": "0",
+      "volume": "5292343.09",
+      "volume24hr": 0,
+      "openInterest": 0,
+      "competitive": 0.9412,
+      "tags": [
+        { "id": "100196", "label": "Fed Rates", "slug": "fed-rates" },
+        { "id": 2, "label": "Economy", "slug": "economy" }
+      ],
+      "markets": [
+        {
+          "id": "712004",
+          "conditionId": "0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff",
+          "slug": "fed-cuts-rates-in-march",
+          "question": "Fed cuts rates in March?",
+          "outcomes": "[\"Yes\", \"No\"]",
+          "outcomePrices": "[\"0.0100\", \"0.9900\"]",
+          "volume": "4410233.98",
+          "endDate": "2025-03-20T21:00:00Z",
+          "active": true,
+          "closed": true
+        },
+        {
+          "id": "712006",
+          "conditionId": "0xaaaa0000bbbb1111cccc2222dddd3333eeee4444ffff55550000666677778888",
+          "slug": "fed-hikes-rates-in-march",
+          "question": "Fed hikes rates in March?",
+          "outcomes": "[\"Yes\", \"No\"]",
+          "outcomePrices": "[\"0.0020\", \"0.9980\"]",
+          "volume": 88109,
+          "endDate": "2025-03-20T21:00:00Z",
+          "active": true,
+          "closed": true
+        }
+      ]
+    },
+    {
+      "id": 90210,
+      "ticker": "no-markets-yet",
+      "slug": "no-markets-yet",
+      "title": "Event with no markets attached",
+      "startDate": "2026-01-01",
+      "endDate": "2026-06-30",
+      "active": true,
+      "closed": false,
+      "new": true,
+      "liquidity": 0,
+      "volume": 0,
+      "tags": [],
+      "markets": []
+    }
+  ],
+  "next_cursor": ""
+}

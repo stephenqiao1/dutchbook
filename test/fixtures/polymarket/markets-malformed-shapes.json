@@ -1,0 +1,31 @@
+{
+  "_comment": "Deliberately malformed. Four records have no usable id and must be skipped entirely — a record that cannot be identified cannot be stored or logged against. The last record is identifiable and must be yielded with its bad fields nulled, proving the page is not abandoned once a skip has happened.",
+  "data": [
+    {
+      "slug": "no-id-at-all",
+      "question": "Is this record identifiable?",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "volume": "10"
+    },
+    null,
+    "a bare string where an object belongs",
+    {
+      "id": { "value": "nested-object-id" },
+      "slug": "id-is-an-object",
+      "question": "Is an object a usable id?"
+    },
+    {
+      "id": "900299",
+      "slug": "identifiable-but-otherwise-broken",
+      "question": "Does the crawl keep going after four skips?",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.5\", \"0.5\"]",
+      "active": "perhaps",
+      "spread": {},
+      "image": "ftp://files.example.com/not-http.png",
+      "volume": "77.5",
+      "endDate": "2026-01-15T00:00:00Z"
+    }
+  ],
+  "next_cursor": ""
+}

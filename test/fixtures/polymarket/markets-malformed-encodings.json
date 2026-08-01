@@ -1,0 +1,29 @@
+{
+  "_comment": "Deliberately malformed. The JSON-encoded list fields are broken in the four ways Gamma has produced them: truncated JSON, a non-numeric price inside a price array, a JSON object where an array belongs, and a bare number instead of a list. Every other field on these records is valid and must survive.",
+  "data": [
+    {
+      "id": "900001",
+      "slug": "truncated-outcomes-json",
+      "question": "Does a truncated outcomes string kill the record?",
+      "outcomes": "[\"Yes\", \"No\"",
+      "outcomePrices": "[\"0.51\", \"abc\"]",
+      "clobTokenIds": "{\"a\": 1}",
+      "volume": "1000.5",
+      "endDate": "2025-12-31T12:00:00Z",
+      "active": true,
+      "closed": false
+    },
+    {
+      "id": 900002,
+      "slug": "outcomes-is-a-number",
+      "question": "Does a numeric outcomes field kill the record?",
+      "outcomes": 42,
+      "outcomePrices": ["0.5", null],
+      "clobTokenIds": ["77001", "77002"],
+      "volume": 2000,
+      "endDate": "2025-11-30T12:00:00Z",
+      "active": true,
+      "closed": false
+    }
+  ]
+}

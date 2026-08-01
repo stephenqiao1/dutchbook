@@ -1,0 +1,232 @@
+import {
+  bigserial,
+  boolean,
+  index,
+  jsonb,
+  numeric,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+
+/**
+ * Drizzle table definitions.
+ *
+ * The catalog tables model Polymarket as a mutable upstream: markets are
+ * renamed, re-tagged, closed, and reopened in place, and the vendor keeps no
+ * history of it. So the ingest is a reconciliation rather than an append —
+ * `markets` holds current state, `market_revisions` holds the audit trail of
+ * every semantic edit, and nothing is ever deleted.
+ *
+ * Workflow: edit this file, `pnpm db:generate`, review the SQL in `drizzle/`,
+ * commit it, then `pnpm db:migrate`.
+ */
+
+/**
+ * A Polymarket event — a group of related markets ("Fed decision in March").
+ *
+ * `first_seen_at` and `last_seen_at` are ours, not the vendor's: they record
+ * when *we* observed the row, which is the only trustworthy basis for deciding
+ * something has gone missing.
+ */
+export const events = pgTable(
+  'events',
+  {
+    /** Polymarket's event id, as a string — it arrives as both string and number. */
+    id: text('id').primaryKey(),
+    slug: text('slug'),
+    title: text('title'),
+    negRisk: boolean('neg_risk'),
+
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /**
+     * When we *first observed* the event closed, not when Polymarket says it
+     * closed. Write-once: later crawls must not move it, or an event that
+     * reopens and re-closes would erase the original timestamp.
+     */
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('events_slug_idx').on(table.slug),
+    index('events_last_seen_at_idx').on(table.lastSeenAt),
+  ],
+);
+
+/**
+ * A single market, keyed by its on-chain condition id.
+ *
+ * `condition_id` rather than Polymarket's numeric `id` is the primary key
+ * because it is the identifier shared with the CLOB and the chain, and the one
+ * that survives the vendor renumbering its own catalog.
+ */
+export const markets = pgTable(
+  'markets',
+  {
+    conditionId: text('condition_id').primaryKey(),
+
+    /** Nulled rather than cascaded: losing an event must not lose the market. */
+    eventId: text('event_id').references(() => events.id, { onDelete: 'set null' }),
+
+    question: text('question'),
+    slug: text('slug'),
+    description: text('description'),
+    resolutionSource: text('resolution_source'),
+
+    /** Ordered: index 0 pairs with `clob_token_ids[0]` and outcome price 0. */
+    outcomes: jsonb('outcomes').$type<string[]>(),
+    endDate: timestamp('end_date', { withTimezone: true }),
+
+    active: boolean('active'),
+    closed: boolean('closed'),
+    archived: boolean('archived'),
+
+    clobTokenIds: jsonb('clob_token_ids').$type<string[]>(),
+
+    /**
+     * SHA-256 over the semantically meaningful fields only — see
+     * `HASHED_FIELDS` in `src/jobs/ingest-catalog.ts`. Volume, prices, and
+     * liquidity are excluded on purpose: they change every crawl and would
+     * make every market look edited on every run.
+     */
+    contentHash: text('content_hash').notNull(),
+
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /**
+     * Set by the reconciliation sweep to the `last_seen_at` of the crawl that
+     * last returned this market, once a later complete crawl has not. Cleared
+     * the moment the market reappears — markets do come back.
+     *
+     * Rows are never deleted, so this column is how "gone" is expressed.
+     */
+    missingSince: timestamp('missing_since', { withTimezone: true }),
+  },
+  (table) => [
+    index('markets_event_id_idx').on(table.eventId),
+    index('markets_last_seen_at_idx').on(table.lastSeenAt),
+    index('markets_missing_since_idx').on(table.missingSince),
+    index('markets_slug_idx').on(table.slug),
+  ],
+);
+
+/**
+ * One row per field per edit — the point of the whole pipeline.
+ *
+ * Polymarket rewrites market text in place. This is the only record that a
+ * question was reworded or a resolution source swapped after people had already
+ * traded on it, so rows here are append-only and never updated.
+ *
+ * `content_hash_before`/`_after` bracket the edit: every revision written by a
+ * single crawl shares a pair, which is what lets you reconstruct a market's
+ * exact state at any point by replaying them.
+ */
+export const marketRevisions = pgTable(
+  'market_revisions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    conditionId: text('condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+
+    /** When we detected the change, not when the vendor made it — unknowable. */
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /** The `markets` column name, e.g. `question` or `resolution_source`. */
+    field: text('field').notNull(),
+
+    /** jsonb, not text, so booleans, nulls, and outcome arrays survive intact. */
+    oldValue: jsonb('old_value'),
+    newValue: jsonb('new_value'),
+
+    contentHashBefore: text('content_hash_before').notNull(),
+    contentHashAfter: text('content_hash_after').notNull(),
+  },
+  (table) => [
+    index('market_revisions_condition_id_changed_at_idx').on(table.conditionId, table.changedAt),
+    index('market_revisions_field_idx').on(table.field),
+    index('market_revisions_changed_at_idx').on(table.changedAt),
+  ],
+);
+
+/**
+ * Point-in-time top-of-book per outcome token.
+ *
+ * Keyed by (condition_id, token_id, ts) so re-running a collector over a window
+ * it already covered overwrites rather than duplicates. `numeric` rather than
+ * float: these are prices, and float drift in a book is not worth the bytes
+ * saved.
+ */
+export const priceSnapshots = pgTable(
+  'price_snapshots',
+  {
+    conditionId: text('condition_id')
+      .notNull()
+      .references(() => markets.conditionId, { onDelete: 'cascade' }),
+
+    /** CLOB ERC-1155 token id — one per outcome, ordered as `markets.outcomes`. */
+    tokenId: text('token_id').notNull(),
+
+    ts: timestamp('ts', { withTimezone: true }).notNull(),
+
+    bid: numeric('bid', { precision: 18, scale: 8 }),
+    ask: numeric('ask', { precision: 18, scale: 8 }),
+    mid: numeric('mid', { precision: 18, scale: 8 }),
+
+    /** Where the quote came from, e.g. `clob-book` or `gamma-market`. */
+    source: text('source').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.conditionId, table.tokenId, table.ts] }),
+    index('price_snapshots_ts_idx').on(table.ts),
+    index('price_snapshots_token_ts_idx').on(table.tokenId, table.ts),
+  ],
+);
+
+/**
+ * Every response the client received, archived before validation.
+ *
+ * Written ahead of parsing on purpose: a payload that later fails to parse is
+ * the one you most need to look at, and this table is the only way to re-derive
+ * the catalog if the parsing logic turns out to have been wrong.
+ *
+ * `response_hash` is unique, so a catalog that has not changed between crawls
+ * costs one row rather than one per run. Two endpoints returning byte-identical
+ * bodies collapse to a single row, attributed to whichever arrived first — that
+ * is the intended dedupe, not a collision.
+ */
+export const rawPayloads = pgTable(
+  'raw_payloads',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+
+    /** Path plus query, e.g. `/events/keyset?limit=100&after_cursor=MTAwMA==`. */
+    endpoint: text('endpoint').notNull(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+
+    body: jsonb('body').notNull(),
+
+    /** SHA-256 over the canonicalised body. */
+    responseHash: text('response_hash').notNull(),
+  },
+  (table) => [
+    uniqueIndex('raw_payloads_response_hash_key').on(table.responseHash),
+    index('raw_payloads_endpoint_fetched_at_idx').on(table.endpoint, table.fetchedAt),
+  ],
+);
+
+export type EventRow = typeof events.$inferSelect;
+export type NewEventRow = typeof events.$inferInsert;
+export type MarketRow = typeof markets.$inferSelect;
+export type NewMarketRow = typeof markets.$inferInsert;
+export type MarketRevisionRow = typeof marketRevisions.$inferSelect;
+export type NewMarketRevisionRow = typeof marketRevisions.$inferInsert;
+export type PriceSnapshotRow = typeof priceSnapshots.$inferSelect;
+export type NewPriceSnapshotRow = typeof priceSnapshots.$inferInsert;
+export type RawPayloadRow = typeof rawPayloads.$inferSelect;
+export type NewRawPayloadRow = typeof rawPayloads.$inferInsert;

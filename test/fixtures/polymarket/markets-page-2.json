@@ -1,0 +1,45 @@
+{
+  "data": [
+    {
+      "id": "712004",
+      "conditionId": "0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff",
+      "slug": "fed-cuts-rates-in-march",
+      "question": "Fed cuts rates in March?",
+      "startDate": "2025-02-01T00:00:00Z",
+      "endDate": "2025-03-20T21:00:00Z",
+      "closedTime": "2025-03-20 21:04:11+00",
+      "createdAt": "2025-01-30T14:00:00Z",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.0100\", \"0.9900\"]",
+      "clobTokenIds": "[\"88112233\", \"88112234\"]",
+      "volume": "4410233.98",
+      "liquidity": "0",
+      "active": true,
+      "closed": true,
+      "archived": false,
+      "restricted": true,
+      "new": false,
+      "featured": false,
+      "enableOrderBook": true,
+      "acceptingOrders": false,
+      "negRisk": true,
+      "spread": 0,
+      "lastTradePrice": 0.01
+    },
+    {
+      "id": "712005",
+      "slug": "fed-cuts-rates-in-may",
+      "question": "Fed cuts rates in May?",
+      "endDate": "2025-05-08T21:00:00Z",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.3400\", \"0.6600\"]",
+      "volume": "882109.11",
+      "liquidity": "88210.9",
+      "active": true,
+      "closed": false,
+      "new": true,
+      "enableOrderBook": true,
+      "acceptingOrders": true
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["dist/**", "coverage/**", "drizzle/**", "node_modules/**"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn"
+  },
+  "rules": {
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "no-console": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error",
+    "promise/no-return-wrap": "error",
+    "promise/param-names": "error",
+    "unicorn/no-await-in-promise-methods": "error",
+    "unicorn/prefer-node-protocol": "error",
+    "no-await-in-loop": "off"
+  },
+  "overrides": [
+    {
+      "files": ["test/**/*.ts", "scripts/**/*.mjs"],
+      "rules": {
+        "no-console": "off",
+        "typescript/no-explicit-any": "off",
+        "typescript/no-non-null-assertion": "off"
+      }
+    }
+  ]
+}

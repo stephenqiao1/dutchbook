@@ -1,0 +1,12 @@
+# Dependencies allowed to run install/postinstall scripts.
+# esbuild needs it to place its native binary (used by tsx, vitest and drizzle-kit).
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+
+  # Pulled in transitively by @testcontainers/postgresql, via its Docker client.
+  # All three build optional native speedups the test suite never exercises —
+  # it talks to the Docker socket locally, not over SSH.
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

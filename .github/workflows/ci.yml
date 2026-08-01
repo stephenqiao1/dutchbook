@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # One run per branch. A newer push supersedes an in-flight one, except on
+  # main, where cancelling a deploy halfway is worse than waiting for it.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  verify:
+    name: typecheck, lint, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # Docker is preinstalled on ubuntu-latest, so the Postgres and Redis
+      # suites start their own throwaway containers rather than skipping. If
+      # that ever stops being true they would skip silently, which is exactly
+      # what the guard below catches.
+      - name: Test
+        run: pnpm test 2>&1 | tee test-output.txt
+
+      - name: Fail if an infrastructure suite silently skipped
+        run: |
+          if grep -q "SKIPPED test/" test-output.txt; then
+            echo "::error::A test suite that needs Docker was skipped. CI must run them."
+            grep "SKIPPED test/" test-output.txt
+            exit 1
+          fi
+
+  deploy:
+    name: deploy to fly.io
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # One deploy at a time, never cancelled: interrupting `flyctl deploy` can
+    # leave the release command half-applied.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # `--ha=false` keeps this to a single machine. The ingest lock makes more
+      # than one safe, but not free, and one crawler is enough.
+      - name: Deploy
+        run: flyctl deploy --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify the deployed release is serving
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://${APP}.fly.dev/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "healthy after ${i} attempt(s)"
+              curl -s "https://${APP}.fly.dev/health"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::/health did not return 200 within 5 minutes of deploying"
+          flyctl logs --no-tail | tail -50
+          exit 1
+        env:
+          APP: dutchbook
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
