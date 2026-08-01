@@ -76,6 +76,7 @@ docker compose down -v   # wipe data
 | `pnpm job:ingest`  | Trigger a catalog ingest by hand (`--inline` runs it here) |
 | `pnpm lint`        | Lint with oxlint                                           |
 | `pnpm test:crash-drill` | SIGKILL an ingest mid-run and verify it reconciles    |
+| `pnpm relations:inspect <condition_id>` | Print everything related to a market |
 | `pnpm typecheck`   | Type-check everything, including tests, without emitting   |
 | `pnpm db:generate` | Diff `src/db/schema.ts` and write a migration to `drizzle/`|
 | `pnpm db:migrate`  | Apply pending migrations to `DATABASE_URL`                 |
@@ -98,8 +99,15 @@ src/
     gamma.ts      Gamma catalog client: keyset pagination, rate limiting, retries
     schemas.ts    Zod schemas that coerce Gamma's inconsistent payloads
   relations/
-    ladders.ts         threshold-ladder extraction — pure, total, no I/O
-    store.ts           idempotent persistence of relation edges
+    types.ts           shared vocabulary: pairwise edges and set-valued groups
+    ladders.ts         threshold ladders — pure, total, no I/O
+    temporal.ts        deadline nesting: "by June 30" entails "by December 31"
+    complements.ts     mechanical negations, P(A) + P(B) = 1
+    partitions.ts      negRisk events, and the conflict check they ground
+    graph.ts           DAG, cycle rejection, transitive reduction, queries
+    extract.ts         runs every extractor and validates against partitions
+    inspect.ts         `pnpm relations:inspect`
+    store.ts           idempotent persistence
   jobs/
     ingest-catalog.ts  catalog reconciliation: hash, diff, revise, reconcile
     catalog-queue.ts   BullMQ schedule, worker, dead letter queue, job metrics
@@ -507,6 +515,90 @@ implications that are false, so they are rejected. The remaining gap is exact
 values (`by 25 bps`), parlays, and races (`hit $80k or $100k first`) — all of
 which carry numbers but no monotone order.
 
+### The other three sources
+
+| Source | Relation | Constraint | Where it comes from |
+| --- | --- | --- | --- |
+| `ladder` | `implies` | P(from) ≤ P(to) | threshold families |
+| `temporal` | `implies` | P(from) ≤ P(to) | nested deadlines |
+| `complement` | `complement` | P(A) + P(B) = 1 | mechanical negation |
+| `neg-risk-event` | `partition` | Σ P = 1 | the venue's own flag |
+
+**Partitions are ground truth.** Polymarket flags an event `negRisk` when its
+markets are mutually exclusive and exhaustive — a three-way soccer result, a
+"top performing Magnificent 7 company" set, a league winner list with an
+"another team" catch-all. Exactly one resolves Yes, so the Yes legs sum to 1.
+That is asserted by the venue rather than inferred from text, which makes it the
+yardstick for everything else: `findPartitionConflicts` reports any inferred
+relation that contradicts one, and `buildRelationGraph` drops it. An implication
+between two members of a mutually exclusive set cannot be true, so when the two
+disagree it is the text extractor that is wrong.
+
+A partition is a **hyperedge**, not a pair, and gets its own tables
+(`relation_groups`, `relation_group_members`). Decomposing it into pairs loses
+half its content: pairwise exclusivity only bounds the sum at 1, and it is
+exhaustiveness — a property of the whole set — that pins it to exactly 1.
+
+**Temporal nesting** turns on one distinction: `by` and `before` accumulate,
+`on` and `at` do not. "Above $2.70 **on** September 4" says nothing about
+September 5 — the price can fall back — so instants are refused however much
+they look like dates. And a `by` mid-question is usually a magnitude
+("inflation increase **by** 2.2%", "lead in RCP **by** 0-0.4"), so the deadline
+clause is anchored to the end of the question. Ordering uses the market's
+resolution timestamp, because a written deadline is often yearless and guessing
+a year would invent the fact the edge depends on. Subjects must match
+character-for-character.
+
+**Complements** recognise a negation only by *removing* it and finding another
+market whose question is then character-identical. That needs no exception list:
+`Will "I Am Not Okay" by Jelly Roll win Best Country Song?` de-negates to a
+question no market asks, so no pair forms. Ambiguous matches — one negation with
+two candidate positives — are dropped rather than guessed.
+
+## The relation graph
+
+[`src/relations/graph.ts`](src/relations/graph.ts) loads every edge into an
+in-memory DAG.
+
+**Cycles are rejected, not tolerated.** A cycle in the implication relation means
+A entails B entails … entails A, which forces every market on it to the same
+probability. That is essentially never a real discovery and essentially always a
+bug — a subject normalized too aggressively, a threshold read off the wrong
+number. `RelationGraph.build` logs each cycle with its path and question text and
+throws `RelationCycleError`; `{ tolerateCycles: true }` drops the cyclic edges and
+keeps the rest.
+
+**Transitive reduction** leaves the covering edges only, so a consistency check
+tests each genuine link once instead of re-testing every implied pair — 87 edges
+for an 88-rung ladder rather than 3,828. The implementation releases each
+reachable set once its last predecessor is done, and reuses a successor's set
+when it is the sole remaining consumer; without that a long chain is quadratic
+in memory and a 20,000-node chain exhausts the heap.
+
+Queries: `ancestors` (stronger claims that entail this one), `descendants`
+(weaker claims it entails), `partitionsContaining`, `complementsOf`.
+
+### Validation status
+
+| Check | Result |
+| --- | --- |
+| Graph over a 12,008-market real corpus | **0 cycles**, 0 conflicts (runs in CI) |
+| Ten random live `negRisk` partitions | **10/10 genuinely exclusive** |
+| Cycle detection, 5,000-node chain closed into a loop | detected |
+| Transitive reduction, 20,000-node chain | correct, linear memory |
+
+Building over the **full** 300k-market catalog is still outstanding: the Fly
+Managed Postgres Basic instance cannot serve a full-table scan of `markets`
+without the backend crashing, so the load never completes. See the operational
+note in [Deployment](#deployment).
+
+```bash
+pnpm relations:inspect 0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff
+```
+
+prints every related market, the relation type, the extractor that produced it,
+and whether the link is a stored edge or only reachable transitively.
+
 ### What the parser refuses
 
 A false edge asserts a probability bound that is not true and corrupts anything
@@ -609,6 +701,19 @@ flyctl secrets set DATABASE_URL=... REDIS_URL=...
 
 Redis eviction is **disabled deliberately**: BullMQ stores job state in Redis,
 and an eviction policy would silently drop queued jobs under memory pressure.
+
+> **Operational note — the database is undersized.**
+> The catalog reached ~300k markets and 1.85 GB, of which 1.29 GB is
+> `raw_payloads` (3,177 rows averaging ~400 KB — each archived page carries 100
+> events and all their nested markets). The Basic plan (shared 2× CPU, 1 GB RAM)
+> crashes under the ingest's sustained upsert load and under any full-table scan
+> of `markets`.
+>
+> `CATALOG_INGEST_ENABLED` is currently **false** in production to keep the
+> database up. Before re-enabling it: resize the plan, and add retention to
+> `raw_payloads` — at ~400 KB per page and ~1,280 pages per crawl, dedupe only
+> helps while the catalog is unchanged, so it will fill the 10 GB volume within
+> days of continuous crawling.
 
 Fly's Managed Postgres hands out a PgBouncer hostname. `src/db/client.ts`
 detects a pooled endpoint from the URL and disables prepared statements, which
