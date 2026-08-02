@@ -12,7 +12,12 @@
 
 **Live dashboard → <https://dutchbook.fly.dev/>** · [full report](docs/REPORT.md) · [the write-up](docs/BLOG.md) · [`/health`](https://dutchbook.fly.dev/health) · [`/metrics`](https://dutchbook.fly.dev/metrics)
 
-[![dutchbook dashboard](docs/img/dashboard.png)](https://dutchbook.fly.dev/)
+[![dutchbook dashboard demo](docs/img/demo.gif)](https://dutchbook.fly.dev/)
+
+<sub>Live status → violation history → lifetime distribution → a partition whose ten
+prices sum to **1.0495** → a ladder priced above what it entails. Also as
+[MP4](docs/img/demo.mp4) (0.9 MB), or click through to the live site.
+Rebuild with `pnpm demo`.</sub>
 
 TypeScript, Fastify, Postgres via Drizzle, BullMQ on Redis, deployed on Fly.io.
 

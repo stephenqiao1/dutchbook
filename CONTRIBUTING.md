@@ -136,11 +136,19 @@ migration that has run anywhere.
 ```bash
 pnpm report                    # docs/REPORT.md and docs/charts/*.png
 pnpm load-test                 # docs/LOAD.md
+pnpm demo --url=http://…       # docs/img/demo.gif and demo.mp4
 ```
 
-Both are generated, and both say so at the top. Do not hand-edit them: every
-number is computed at run time precisely so the document cannot drift from the
-data. If a figure looks wrong, fix the query.
+The report and the load test are generated, and both say so at the top. Do not
+hand-edit them: every number is computed at run time precisely so the document
+cannot drift from the data. If a figure looks wrong, fix the query.
+
+`pnpm demo` needs a running dashboard, Chrome and ffmpeg. It drives the real page
+through a scripted tour over the DevTools protocol and encodes the frames. The
+two families it opens are pinned by `--partition` and `--ladder` because they have
+to be ones that are actually violated — a demo of a coherent family shows the
+feature working and the point not landing. Those keys go stale as markets resolve;
+`/api/families` plus a check for `violated: true` finds new ones.
 
 The report reads whatever `DATABASE_URL` points at, so which database produced a
 given copy is a property of how it was run — the observation window at the top is

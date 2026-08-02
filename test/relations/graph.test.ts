@@ -260,16 +260,29 @@ describe('queries', () => {
 });
 
 describe('scale', () => {
-  it('handles a long chain without overflowing the stack', () => {
-    // Deep enough that a recursive Tarjan would blow up.
-    const edges: RelationEdge[] = [];
-    for (let i = 0; i < 20_000; i += 1) edges.push(implies(`n${i}`, `n${i + 1}`));
+  /**
+   * Given a generous timeout on purpose.
+   *
+   * Twenty thousand nodes is the point — a recursive Tarjan blows the stack well
+   * before that — but transitive reduction over a chain that long is superlinear,
+   * and the whole suite runs its files in parallel. Under that load this took
+   * ~19s against the global 10s limit and failed intermittently, which is worse
+   * than a slow test: a suite that goes red at random teaches people to re-run it
+   * rather than read it. The size is the assertion, so the timeout moves instead.
+   */
+  it(
+    'handles a long chain without overflowing the stack',
+    () => {
+      const edges: RelationEdge[] = [];
+      for (let i = 0; i < 20_000; i += 1) edges.push(implies(`n${i}`, `n${i + 1}`));
 
-    const graph = RelationGraph.build(edges);
-    expect(graph.stats.cyclesFound).toBe(0);
-    expect(graph.stats.reducedEdges).toBe(20_000);
-    expect(graph.descendants('n0')).toHaveLength(20_000);
-  });
+      const graph = RelationGraph.build(edges);
+      expect(graph.stats.cyclesFound).toBe(0);
+      expect(graph.stats.reducedEdges).toBe(20_000);
+      expect(graph.descendants('n0')).toHaveLength(20_000);
+    },
+    60_000,
+  );
 
   it('detects a cycle closed at the end of a long chain', () => {
     const edges: RelationEdge[] = [];
