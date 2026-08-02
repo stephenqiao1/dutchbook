@@ -1100,6 +1100,223 @@ Stored in `relations`, unique on `(from_condition_id, to_condition_id, type)`,
 so re-extraction refreshes `last_seen_at` instead of inserting duplicates.
 `first_seen_at` never moves, and a `CHECK` rejects self-edges.
 
+## The live market feed
+
+[`src/polymarket/ws.ts`](src/polymarket/ws.ts) holds an in-memory order book for
+every token under constraint, fed by the CLOB market WebSocket
+(`wss://ws-subscriptions-clob.polymarket.com/ws/market`). Stage 1 screens on
+those books instead of on cached Gamma quotes.
+
+Read-only, like the rest of [src/polymarket/](src/polymarket/). No auth, no
+wallet, no orders.
+
+### Freshness is not latency
+
+Handing live prices to a check that runs every sixty seconds does not make
+detection fast. **A poll finds a violation an average of half its interval after
+it opens**, so a sixty-second schedule has a thirty-second median however fresh
+its inputs are. Price freshness and detection latency are different quantities,
+and only the second is what a trader loses to.
+
+So the feed drives the screen. [`watch.ts`](src/coherence/watch.ts) keeps a
+`token → constraints` index; a book update marks only the constraints that token
+participates in as dirty, and 250ms later only those are re-evaluated. When one
+crosses epsilon, a check is queued immediately.
+
+The scheduled check stays, unchanged, as the floor. It still re-screens
+everything against cached quotes, so a market whose book never seeded or whose
+shard is disconnected is still covered — just at the old speed. Replacing the
+poll rather than backing it up would turn any feed outage into silent blindness.
+
+Only *transitions* are reported. A violation open across a hundred book updates
+is one detection, not a hundred, and a burst of detections collapses to one
+queued check.
+
+### Seven things the venue does
+
+All measured against the running service on 2026-08-01. Every one of them
+corrupts a book **silently** if assumed the other way — a wrong book does not
+throw, it produces a confident, well-formed, wrong price.
+
+| # | Behaviour | How it was established |
+| --- | --- | --- |
+| 1 | `price_change.size` is the new **absolute** size at that level, not a delta | Both interpretations applied side by side over 214 changes on 8 tokens, then compared to REST: **absolute 6/8, delta 0/8** |
+| 2 | Levels arrive worst-first — bids ascending, asks descending | Observed; identical to REST |
+| 3 | The initial `book` snapshot is **not reliable at scale** | 24 assets → 24 snapshots. 1,000 assets → **zero**. 25,548 → eight |
+| 4 | A second `subscribe` on an open socket is rejected | Answered `INVALID OPERATION`; the new assets never delivered |
+| 5 | `PING` → `PONG` as a text frame | Sent and answered |
+| 6 | `best_bid`/`best_ask` on an event are the venue's **current** top, which runs *ahead* of the incremental stream | 24 of 3,914 changes disagreed with the applied book; every sampled case needed changes not yet delivered |
+| 7 | Each state carries a `hash` that identifies it | Over 60 comparisons, equal hash ⇒ identical level maps, 60/60 |
+
+Hazard 3 is the dangerous one. Alongside those missing snapshots, **5,780
+assets sent `price_change` events for books that were never snapshotted**. A
+book assembled from those changes alone contains only the levels that happened
+to move and none of the resting depth behind them — it looks entirely normal.
+
+So **REST seeds every book**, and a change for an unseeded token is dropped and
+counted (`changesUnseeded`). The feed is the fast path, never the source of
+truth about what exists.
+
+### Sizing the subscription
+
+The stated mitigation — subscribe only to tokens in at least one relation rather
+than the whole catalog — turns out to save less than it sounds like:
+
+| Set | Tokens |
+| --- | --- |
+| Whole active catalog | 29,902 |
+| Markets under constraint | 25,548 |
+| **Outcome-0 tokens only** | **12,774** |
+
+85% of the active catalog is already in the graph, so the relation filter saves
+15%. The halving comes from subscribing to **outcome 0 only**: every relation is
+written about P(first outcome), and the second token is its complement, so
+subscribing to it doubles the bandwidth to learn a number available by
+subtraction. Stage 2 still fetches both legs over REST — a correcting basket may
+need either side, and it needs real depth rather than a midpoint.
+
+One socket accepted all 25,548 tokens, so the shard size is not a venue limit.
+It is a blast radius: the asset set is fixed for the life of a connection
+(hazard 4), so a shard is the unit that must be rebuilt when the constraint
+graph changes, and the unit one dropped socket takes offline.
+
+### Reconnect and heartbeat
+
+Full-jitter backoff, the same policy the HTTP clients use — every shard drops
+together when the venue restarts, and correlated reconnects are how a blip
+becomes an outage.
+
+`PING` every 10s, and a connection silent for 30s is recycled even if the socket
+still claims to be open. On a shard of quiet markets, silence and death are
+otherwise indistinguishable; `PONG` is the only thing that separates them.
+
+**A reconnect re-seeds from REST.** Nothing is replayed for the window we were
+away, so those books are of unknown age — and letting the reconciler discover
+that a few hundred tokens a minute would leave them wrong for minutes, quietly.
+
+### Reconciliation, and why the naive version is useless
+
+Comparing an in-memory book to a REST snapshot does not work directly. The two
+are taken at different instants, so they differ constantly for reasons that are
+not bugs: of 8 tokens compared after 45 seconds of updates, **2 differed by
+exactly one level** — in each case a level that landed between the last WS event
+and the REST read. A counter fed by that comparison never reaches zero and
+therefore says nothing.
+
+The `hash` (hazard 7) is what makes it meaningful. Each token sorts into one of
+four cases:
+
+| Case | Meaning | Counted as |
+| --- | --- | --- |
+| Hash equal, levels equal | Agreed | — |
+| **Hash equal, levels differ** | **The incremental apply is wrong** | `content` |
+| Hash in our recent history | REST is behind us. Expected | — |
+| Hash unrecognised | In flight, or missed — indistinguishable now | parked, re-examined next cycle; `stale` if still unknown |
+
+Deferring judgment on the last case is what makes zero reachable: an update in
+flight and one never delivered look identical in the moment, and calling the
+first a divergence would keep the counter permanently non-zero.
+
+#### The top-of-book check is a hint, not a verdict
+
+Every `price_change` carries a `best_bid`/`best_ask`, and comparing them against
+the applied book looked like a free continuous assertion. It is not one. Those
+fields are the venue's *current* top, and they run ahead of the incremental
+stream — of 3,914 changes, 24 disagreed, and in every sampled case the reported
+top required changes that had not been delivered yet:
+
+```
+reported 0.11/0.44   before 0.14/0.44   after 0.13/0.44   change = BUY 0.14 → 0
+```
+
+We removed the 0.14 bid as instructed, leaving 0.13. The venue already had 0.13
+*and* 0.12 gone. Nothing is wrong; we are simply a few milliseconds behind.
+
+Counting these as divergences measured a 0.6% false-positive rate. So the check
+is kept for what it is genuinely good for — a token whose top trails is a token
+worth reconciling next — and it feeds the resync queue rather than the counter.
+
+### What the divergence counter actually measures
+
+Both remaining kinds mean an update never reached us:
+
+- **`content`** — we hold the hash of the venue's current state but not every level behind it, so an intermediate update was lost.
+- **`stale`** — the venue is in a state we never saw at all, and still had not seen a full cycle later.
+
+**Neither is zero at production scale, and that is not a bug in this code.**
+Drift scales with how much is subscribed:
+
+| Tokens subscribed | Changes applied | Divergence rate |
+| --- | --- | --- |
+| 5 | 565 | **0%** |
+| 30 | 1,968 | 1.8% |
+| 200 | 10,608 | 2.7% |
+
+At five tokens the apply path reconstructs the venue's book exactly, 565 changes
+running with zero disagreement. The rate rises with subscription size, which is
+delivery loss under volume — the same property that makes the venue skip initial
+snapshots at scale (hazard 3).
+
+That reframes reconciliation. It is not a tripwire for a bug that should never
+fire; it is a **continuous repair loop**, and its sweep period is a correctness
+parameter, because it bounds how long a drifted book can price stage 1. Hence
+2,500 books every 30s — a ~2.5 minute sweep of a 12,500-token feed, for 25
+requests per 30s against a 50/s ceiling.
+
+Operationally, what matters is that the rate stays *flat*. A step change means
+something broke.
+
+Plus `ws_connected` (connected shards, not a boolean — five of six connected is
+a real state), `ws_reconnects_total`, `ws_messages_total{type}`, and
+`coherence_detection_latency_seconds`.
+
+### Verifying it
+
+```bash
+pnpm feed:soak -- --minutes=20
+```
+
+Drives the real feed against live books and reports median detection latency and
+each divergence kind separately. A 12-minute run over 12,493 subscribed tokens,
+885,299 level changes applied:
+
+```
+subscribed 12493 tokens across 5 shard(s); seeded 4854
+watching 1409 constraints
+
+t+ 203s  msgs 237716  conn 5/5  reconn 1  detections 174  median 0.18s
+t+ 563s  msgs 686711  conn 5/5  reconn 1  detections 410  median 0.07s
+
+detections     507        reconciliation  checked 6000, agreed 5361, ahead 440
+latency p50    0.06s      divergence content   51
+latency p90    1.45s      divergence stale      0
+latency p99   10.87s      top hints           380  (not a defect)
+latency max   15.95s      drift rate         0.85% of 6000 comparisons
+```
+
+**Median detection latency 0.06s**, against a 5-second target — and against the
+~30s a 60-second poll can achieve at best, however fresh its prices are.
+
+Two honest results from that run:
+
+- **4,854 of 12,493 tokens seeded.** The rest are markets our catalog considers
+  active that the CLOB has no book for, so stage 1 prices them from the cached
+  Gamma quote via the documented fallback. That is a catalog-freshness question
+  worth chasing, not a feed defect — but it does mean the feed currently covers
+  39% of the constrained set and the poll still carries the rest.
+- **Divergence did not stay at zero, and will not.** It is a property of the
+  venue's delivery at scale, measurably absent at 5 tokens and present at 200.
+  The soak reports the drift *rate* and fails on a 5% ceiling rather than on
+  zero, because a threshold tuned until it reads green is worth less than the
+  honest number. It also prints the literal zero criterion, failing, so the gap
+  is visible rather than argued away.
+
+An earlier run showed a 331-second worst-case latency. That was an artefact, not
+a slow detection: books drained after seeding kept the *snapshot's* venue
+timestamp rather than the timestamp of the newest change replayed onto them, so
+every violation such an emission opened looked as old as the venue's last write
+to that market. Fixed; the tail fell to 15.95s.
+
 ## Alerting
 
 [`src/alerts/`](src/alerts/) fires a Discord webhook when a violation is

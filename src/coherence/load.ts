@@ -3,7 +3,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
 import { db } from '../db/client.js';
 import type * as schema from '../db/schema.js';
-import { marketQuotes } from '../db/schema.js';
+import { marketQuotes, markets } from '../db/schema.js';
 import { createLogger } from '../logger.js';
 import { GammaClient } from '../polymarket/gamma.js';
 import type { Constraint, ConstraintMember } from './constraints.js';
@@ -141,10 +141,10 @@ export async function refreshQuotes(
   for (let i = 0; i < conditionIds.length; i += QUOTE_BATCH) {
     const batch = conditionIds.slice(i, i + QUOTE_BATCH);
 
-    const markets = await client.fetchMarketsByConditionIds(batch, signal);
+    const quoted = await client.fetchMarketsByConditionIds(batch, signal);
 
     const rows: (typeof marketQuotes.$inferInsert)[] = [];
-    for (const market of markets) {
+    for (const market of quoted) {
       if (market.conditionId === null || seen.has(market.conditionId)) continue;
       seen.add(market.conditionId);
 
@@ -205,6 +205,70 @@ export async function loadQuotes(
     if (Number.isFinite(price)) prices.set(row.conditionId, price);
   }
   return prices;
+}
+
+/**
+ * conditionId → the token whose book prices the market for stage 1.
+ *
+ * Outcome 0 only, and that halves the feed. Every relation is written about
+ * P(first outcome), and the second token is its complement — subscribing to both
+ * would double the bandwidth to learn a number already known by subtraction.
+ * Stage 2 still fetches both legs over REST, because a *correcting basket* may
+ * need either side and needs real depth rather than a midpoint.
+ */
+export async function loadScreenTokens(
+  conditionIds: readonly string[],
+  database: Database = db,
+): Promise<Map<string, string>> {
+  if (conditionIds.length === 0) return new Map();
+
+  const rows = await database
+    .select({ conditionId: markets.conditionId, clobTokenIds: markets.clobTokenIds })
+    .from(markets)
+    .where(inArray(markets.conditionId, [...conditionIds]));
+
+  const tokens = new Map<string, string>();
+  for (const row of rows) {
+    const token = row.clobTokenIds?.[0];
+    if (typeof token === 'string' && token !== '') tokens.set(row.conditionId, token);
+  }
+  return tokens;
+}
+
+/**
+ * The prices stage 1 screens with: live book midpoints where the feed has them,
+ * cached Gamma quotes everywhere else.
+ *
+ * The fallback is not a nicety. A market whose shard is disconnected, whose book
+ * never seeded, or which is simply one-sided has no live midpoint, and dropping
+ * it would quietly shrink the constraint set — the feed going down would look
+ * like the graph getting smaller rather than like an outage. `source` reports
+ * the split so that shrinkage is visible.
+ */
+export function screenPrices(
+  conditionIds: readonly string[],
+  cached: ReadonlyMap<string, number>,
+  tokenOf: ReadonlyMap<string, string> | null,
+  feed: { mid(tokenId: string): number | null } | null,
+): { prices: Map<string, number>; live: number; fallback: number } {
+  const prices = new Map<string, number>();
+  let live = 0;
+
+  for (const conditionId of conditionIds) {
+    const tokenId = tokenOf?.get(conditionId);
+    const mid = feed !== null && tokenId !== undefined ? feed.mid(tokenId) : null;
+
+    if (mid !== null && Number.isFinite(mid)) {
+      prices.set(conditionId, mid);
+      live += 1;
+      continue;
+    }
+
+    const fallback = cached.get(conditionId);
+    if (fallback !== undefined) prices.set(conditionId, fallback);
+  }
+
+  return { prices, live, fallback: prices.size - live };
 }
 
 /** Attaches cached prices to a constraint's members. */

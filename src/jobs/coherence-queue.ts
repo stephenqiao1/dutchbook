@@ -2,7 +2,7 @@ import { Queue, Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
 import { Alerter } from '../alerts/index.js';
-import { runCoherenceCheck, type CheckResult } from '../coherence/check.js';
+import { runCoherenceCheck, type CheckResult, type StagePriceFeed } from '../coherence/check.js';
 import { recordViolations, type RecordResult } from '../coherence/violations-store.js';
 import { config } from '../config.js';
 import { db } from '../db/client.js';
@@ -62,6 +62,20 @@ export interface CoherenceJobsOptions {
   connection?: Redis;
   /** The work itself. Injected by tests. */
   run?: (signal: AbortSignal) => Promise<CheckResult>;
+  /**
+   * Live books for stage 1, resolved per run rather than captured once.
+   *
+   * A getter because the feed and this queue are mutually dependent — the feed
+   * queues checks, the checks read the feed — and one of the two has to be
+   * constructed first. Resolving at job time rather than at wiring time breaks
+   * that without a placeholder object.
+   *
+   * It matters that this is wired at all: a check triggered by the feed but
+   * screening on cached Gamma quotes can re-screen the very constraint that
+   * caused the trigger and conclude nothing is wrong, because the quote has not
+   * caught up yet. The trigger would then be work that reliably finds nothing.
+   */
+  feed?: () => StagePriceFeed | undefined;
   /** Persistence. Injected by tests; defaults to writing episodes to Postgres. */
   persist?: (result: CheckResult) => Promise<RecordResult>;
   /** Alerting. Injected by tests; defaults to the Discord-or-log alerter. */
@@ -206,12 +220,15 @@ export async function startCoherenceJobs(
 
   const run =
     options.run ??
-    ((signal: AbortSignal) =>
-      runCoherenceCheck(db, {
+    ((signal: AbortSignal) => {
+      const feed = options.feed?.();
+      return runCoherenceCheck(db, {
         signal,
         epsilon: config.COHERENCE_EPSILON,
         maxConfirmations: config.COHERENCE_MAX_CONFIRMATIONS,
-      }));
+        ...(feed === undefined ? {} : { feed }),
+      });
+    });
 
   /**
    * `stillViolating` comes from the screen, not from stage 2. A constraint that

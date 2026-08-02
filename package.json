@@ -15,6 +15,7 @@
     "test:crash-drill": "node scripts/crash-drill.mjs",
     "job:ingest": "tsx src/jobs/trigger-ingest.ts",
     "alerts:drill": "tsx scripts/alert-drill.mts",
+    "feed:soak": "tsx scripts/feed-soak.mts",
     "coherence:check": "tsx src/coherence/inspect-cli.ts",
     "coherence:report": "tsx src/coherence/inspect-cli.ts --report",
     "pricing:verify": "tsx scripts/verify-executable-cost.mts",

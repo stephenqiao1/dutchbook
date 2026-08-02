@@ -134,6 +134,66 @@ const envSchema = z.object({
    */
   COHERENCE_MAX_CONFIRMATIONS: z.coerce.number().int().min(1).max(500).default(25),
 
+  // --- market feed ----------------------------------------------------------
+
+  /**
+   * Whether stage 1 is driven by the live order-book feed.
+   *
+   * Off falls back to screening cached Gamma quotes on the schedule, which
+   * works and is slow. Worth keeping switchable: the feed is the component most
+   * exposed to a vendor protocol change, and a bad deploy should be one env var
+   * from the old behaviour rather than a rollback.
+   */
+  MARKET_FEED_ENABLED: booleanFlag.default(true),
+
+  /** Assets per websocket. A blast-radius limit, not a venue limit. */
+  MARKET_FEED_SHARD_SIZE: z.coerce.number().int().min(1).max(25_000).default(2_500),
+
+  /** Heartbeat cadence. The venue answers `PING` with `PONG`. */
+  MARKET_FEED_PING_INTERVAL_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
+
+  /**
+   * Silence after which a connection is presumed dead and recycled. Must exceed
+   * the ping interval by enough that one lost PONG is not a reconnect.
+   */
+  MARKET_FEED_STALE_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(30_000),
+
+  /** How often a slice of books is compared against fresh REST snapshots. */
+  MARKET_FEED_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(30_000),
+
+  /**
+   * Books per reconciliation pass.
+   *
+   * Sized from measurement, not caution. Book drift is not a rare anomaly: about
+   * 1% of hash-gated comparisons find a book that missed an update, and the rate
+   * scales with subscription size. So the sweep period is a correctness
+   * parameter — it bounds how long a drifted book can price stage 1 — rather
+   * than a safety net for a bug that should not happen. This pair sweeps a
+   * 12,500-token feed end to end in about 2.5 minutes, for 25 requests every 30
+   * seconds against a 50/s ceiling on `POST /books`.
+   */
+  MARKET_FEED_RECONCILE_BATCH: z.coerce.number().int().min(1).max(20_000).default(2_500),
+
+  /**
+   * Debounce between a book update and re-screening the constraints it touches.
+   * Long enough that a burst of levels on one market is one evaluation, short
+   * enough to stay irrelevant against the five-second detection target.
+   */
+  MARKET_FEED_SCREEN_DEBOUNCE_MS: z.coerce.number().int().min(10).max(10_000).default(250),
+
+  /**
+   * Floor between feed-triggered confirmations. Detections arrive in bursts when
+   * a whole event re-prices; without this each one would queue its own check.
+   */
+  MARKET_FEED_TRIGGER_COOLDOWN_MS: z.coerce.number().int().min(0).max(600_000).default(5_000),
+
+  /**
+   * How often the subscription is rebuilt from the constraint graph. New markets
+   * arrive with the ten-minute ingest, and the asset set cannot be changed on a
+   * live socket, so picking them up means reconnecting.
+   */
+  MARKET_FEED_REFRESH_INTERVAL_MS: z.coerce.number().int().min(60_000).default(900_000),
+
   // --- alerting -------------------------------------------------------------
 
   /**

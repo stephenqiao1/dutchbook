@@ -16,7 +16,7 @@ import {
   type Evaluation,
   DEFAULT_SCREEN_EPSILON,
 } from './constraints.js';
-import { loadConstraints, loadQuotes, priced, refreshQuotes } from './load.js';
+import { loadConstraints, loadQuotes, loadScreenTokens, priced, refreshQuotes, screenPrices } from './load.js';
 import { priceCorrectingTrade, type BookLookup, type CorrectingTrade, type TradeFailure } from './trade.js';
 
 /**
@@ -55,6 +55,18 @@ export interface CheckOptions {
   readonly signal?: AbortSignal;
   readonly clob?: ClobClient;
   readonly gamma?: GammaClient;
+  /**
+   * Live order books for the screen. When present, stage 1 prices from book
+   * midpoints and the Gamma refresh narrows to the markets the feed does not
+   * cover — which is the whole point of the feed, since a Gamma quote is already
+   * seconds old when it arrives and describes no size at all.
+   */
+  readonly feed?: StagePriceFeed;
+}
+
+/** The slice of the market feed stage 1 uses. */
+export interface StagePriceFeed {
+  mid(tokenId: string): number | null;
 }
 
 /** What stage 2 concluded about one screened constraint. */
@@ -114,17 +126,38 @@ export async function runCoherenceCheck(
   // ---- stage 0: constraints, and the prices to screen them with -------------
   const { constraints, conditionIds } = await loadConstraints(database);
 
+  const feed = options.feed ?? null;
+  const tokenOf = feed === null ? null : await loadScreenTokens(conditionIds, database);
+
   if (options.skipQuoteRefresh !== true) {
-    await refreshQuotes(conditionIds, database, gamma, options.signal);
+    // With a feed, Gamma is refreshed only for what the feed cannot price. That
+    // is the traffic saving, but it is also the point: the cached quote is the
+    // fallback path, and a fallback nobody refreshes is a fallback that fails
+    // when it is finally needed.
+    const stale =
+      feed === null
+        ? conditionIds
+        : conditionIds.filter((id) => {
+            const token = tokenOf?.get(id);
+            return token === undefined || feed.mid(token) === null;
+          });
+    await refreshQuotes(stale, database, gamma, options.signal);
   }
-  const quotes = await loadQuotes(conditionIds, database);
+  const cached = await loadQuotes(conditionIds, database);
+  const { prices, live, fallback } = screenPrices(conditionIds, cached, tokenOf, feed);
 
   // ---- stage 1: the cheap screen -------------------------------------------
-  const withPrices = constraints.map((constraint) => priced(constraint, quotes));
+  const withPrices = constraints.map((constraint) => priced(constraint, prices));
   const { violations, stats } = screen(withPrices, epsilon);
 
   log.info(
-    { ...stats, epsilon, promoted: Math.min(violations.length, maxConfirmations) },
+    {
+      ...stats,
+      epsilon,
+      promoted: Math.min(violations.length, maxConfirmations),
+      pricedFromFeed: live,
+      pricedFromCache: fallback,
+    },
     'coherence screen complete',
   );
 

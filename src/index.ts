@@ -5,6 +5,7 @@ import { closeDatabase } from './db/client.js';
 import { describeError } from './errors.js';
 import { startCatalogJobs, type CatalogJobs } from './jobs/catalog-queue.js';
 import { startCoherenceJobs, type CoherenceJobs } from './jobs/coherence-queue.js';
+import { startMarketFeed, type MarketFeedRunner } from './jobs/market-feed.js';
 import { logger } from './logger.js';
 import { closeRedis } from './redis.js';
 import { start, version } from './server.js';
@@ -12,6 +13,7 @@ import { start, version } from './server.js';
 let app: FastifyInstance;
 let jobs: CatalogJobs | undefined;
 let coherence: CoherenceJobs | undefined;
+let marketFeed: MarketFeedRunner | undefined;
 
 try {
   app = await start();
@@ -26,7 +28,18 @@ try {
   // Independent of the ingest, and independently switchable: the check is
   // cheap enough to keep running while a full catalog crawl is paused.
   if (config.COHERENCE_CHECK_ENABLED) {
-    coherence = await startCoherenceJobs();
+    // The two are mutually dependent: the feed queues checks, and those checks
+    // screen on the feed's books. The queue is built first with a getter, so by
+    // the time any job runs the feed is there.
+    coherence = await startCoherenceJobs({ feed: () => marketFeed?.feed });
+
+    // The feed only makes sense alongside the checker it feeds. It queues a
+    // check the moment a constraint breaks, so the sixty-second schedule stops
+    // being how violations are found and becomes the floor under it.
+    if (config.MARKET_FEED_ENABLED) {
+      const queue = coherence;
+      marketFeed = await startMarketFeed({ trigger: (reason) => queue.trigger(reason) });
+    }
   }
 
   logger.info(
@@ -35,6 +48,7 @@ try {
       nodeEnv: config.NODE_ENV,
       catalogIngest: config.CATALOG_INGEST_ENABLED,
       coherenceCheck: config.COHERENCE_CHECK_ENABLED,
+      marketFeed: config.MARKET_FEED_ENABLED && config.COHERENCE_CHECK_ENABLED,
     },
     'dutchbook started',
   );
@@ -63,6 +77,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   }, budgetMs);
 
   try {
+    // Sockets first: the feed only queues work, so closing it before the
+    // drain means nothing new arrives while in-flight checks finish.
+    marketFeed?.close();
+
     // Stop accepting requests first. Then let the in-flight job finish: it
     // holds the lock and a database transaction, and interrupting it wastes
     // the crawl, where waiting costs only the rest of one batch.

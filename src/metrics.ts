@@ -374,6 +374,71 @@ export const violationLifetimeMedian = new Gauge(
   'Median lifetime of closed confirmed violations. -1 before any have closed.',
 );
 
+// ---------------------------------------------------------------------------
+// Market feed
+// ---------------------------------------------------------------------------
+
+/**
+ * Connected shards, not a boolean.
+ *
+ * The subscription is split across several sockets because the asset set is
+ * fixed for the life of a connection, so "is the feed up" has no yes/no answer —
+ * five of six shards connected is a real and important state. With a single
+ * shard this degenerates to the 0/1 the name suggests.
+ */
+export const wsConnected = new Gauge(
+  'ws_connected',
+  'Market-feed shards currently connected and subscribed.',
+);
+
+export const wsReconnects = new Counter(
+  'ws_reconnects_total',
+  'Market-feed reconnection attempts, cumulative.',
+  [{}],
+);
+
+export const wsMessages = new Counter(
+  'ws_messages_total',
+  'Frames received from the market feed, by event type.',
+  [{ type: 'book' }, { type: 'price_change' }, { type: 'pong' }],
+);
+
+/**
+ * Book divergences, by how the disagreement was found.
+ *
+ * Both kinds mean an update never reached us; they differ in how it showed up:
+ *
+ * - `content` — we hold the hash of the venue's *current* state but not every
+ *   level behind it, so an intermediate update was lost.
+ * - `stale` — the venue is in a state we never saw at all, and still had not
+ *   seen a full cycle later.
+ *
+ * Neither is expected to be zero at production subscription sizes. Measured
+ * against the live venue, drift scales with how much is subscribed: 0 across 565
+ * changes on 5 tokens, 1.8% of comparisons on 30, 2.7% on 200. The apply path is
+ * correct — this counts delivery loss, which is why reconciliation is a
+ * continuous repair loop rather than a tripwire for a bug that should not
+ * happen. What matters operationally is that the rate stays flat: a step change
+ * means something broke.
+ */
+export const bookDivergence = new Counter(
+  'book_divergence_events_total',
+  'Occasions the in-memory book had to be repaired from a REST snapshot, by kind.',
+  [{ kind: 'content' }, { kind: 'stale' }],
+);
+
+/**
+ * Venue timestamp to detection. The headline for the feed's whole reason to
+ * exist, so the buckets are dense below ten seconds and coarse above it — the
+ * difference between 40 and 60 seconds is not interesting, the difference
+ * between 2 and 5 is the entire point.
+ */
+export const detectionLatency = new Histogram(
+  'coherence_detection_latency_seconds',
+  'Seconds from the venue timestamp of a book change to the screen detecting the violation it opened.',
+  [0.25, 0.5, 1, 2, 5, 10, 30, 60, 120],
+);
+
 const ALL_METRICS: readonly Metric[] = [
   ingestRuns,
   ingestErrors,
@@ -399,6 +464,11 @@ const ALL_METRICS: readonly Metric[] = [
   alertsSent,
   alertsSuppressed,
   alertsFailed,
+  wsConnected,
+  wsReconnects,
+  wsMessages,
+  bookDivergence,
+  detectionLatency,
 ];
 
 /**
