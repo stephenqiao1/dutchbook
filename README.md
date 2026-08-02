@@ -1453,6 +1453,70 @@ HTTP requests actually delivered: 8 (counted 8)
 The last line matters: it counts requests the mock server actually received, so
 "sent 1" cannot be satisfied by a transport that quietly dropped the message.
 
+## Report
+
+```bash
+pnpm report            # writes docs/REPORT.md and docs/charts/*.png
+pnpm report --out=tmp  # somewhere else
+```
+
+Reads whatever `DATABASE_URL` points at and regenerates
+[docs/REPORT.md](docs/REPORT.md) — catalog and coverage, apparent versus
+confirmed violations, the net-edge and lifetime distributions, a test of whether
+larger violations close faster, family rankings by category and horizon,
+time-of-day patterns, and a limitations section. The narrative in
+[docs/BLOG.md](docs/BLOG.md) leads with the lifetime result.
+
+**Every number in the report is computed at run time; none is written by hand.**
+A hand-written sentence about a median becomes a lie the first time the median
+moves, and nothing catches it.
+
+### Charts with no dependencies
+
+[`png.ts`](src/report/png.ts) is a raster canvas and a PNG encoder built on
+Node's own `zlib`, plus a 5×7 bitmap font. The alternatives — headless Chrome, a
+native image library — both fail the same acceptance criterion: the report has to
+run from a clean checkout, and a chart that needs Chrome installed or a binary
+that will not build is a chart nobody can regenerate.
+
+Every figure is a bar chart or a heatmap because every question the report asks
+is "how does this quantity differ across these buckets". A test asserts the PNG
+signature, the `IHDR` dimensions and the `IEND` terminator, because a corrupt
+image renders as a broken-image icon in the one place anyone looks at it.
+
+### The statistics are tested, not assumed
+
+The report's central claim rests on a rank correlation, so `spearman` is checked
+against a perfectly inverted ranking, a monotone transform, and a textbook
+tied-rank worked example. It returns `null` rather than `0` when one side has no
+variance — `0` would claim "no relationship" where the truth is "no ranking".
+
+The committed copy of [docs/REPORT.md](docs/REPORT.md) was generated against the
+**local** database, which is the only one that has a relation graph. Running it
+against production works and is part of the acceptance check — it produces a
+valid report with zeros throughout, because production has never had
+`relations:extract` run against it and the coherence checker is switched off
+there.
+
+### What the first run found
+
+Three things worth stating before anyone quotes it:
+
+- **The window is hours, not the thirty days the analysis was designed for**, and
+  the report says so at the top rather than in a footnote. Distributional
+  findings survive that; every rate, weekday effect and intraday pattern does
+  not, and each is marked unavailable where it would otherwise appear.
+- **Median lifetime is 15 seconds — but 90.6% of closed episodes sit at or below
+  two check intervals.** For nine episodes in ten the recorded lifetime is the
+  sampling rate, not the market. The hypothesis that larger violations close
+  faster is *not supported* (Spearman rho = +0.154 pooled, and positive inside
+  each constraint type, so it is not a pooling artefact) — but the medians are
+  pinned to the floor, so the honest answer is that this window cannot settle it.
+- **Median net edge on confirmed violations is ~30¢ per share, which is not
+  credible** as risk-free money. The report says so in its own limitations
+  section and names the likeliest causes, the first being a relation that is
+  simply wrong — which has happened here before.
+
 ## Dashboard
 
 A public, read-only single-page app at **<https://dutchbook.fly.dev/>**, served

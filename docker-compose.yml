@@ -6,6 +6,12 @@ services:
     # embeddings for nearest-neighbour candidate generation.
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # Docker defaults /dev/shm to 64MB, which Postgres uses for parallel query
+    # workers. The partition-group aggregate joins 24k groups against 860k
+    # markets and a parallel hash aggregate needs more than that: on the default
+    # it fails outright with `could not resize shared memory segment ... No
+    # space left on device`, which reads like a full disk and is not one.
+    shm_size: '1gb'
     environment:
       POSTGRES_USER: dutchbook
       POSTGRES_PASSWORD: dutchbook

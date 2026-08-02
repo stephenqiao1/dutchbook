@@ -16,6 +16,7 @@
     "job:ingest": "tsx src/jobs/trigger-ingest.ts",
     "alerts:drill": "tsx scripts/alert-drill.mts",
     "feed:soak": "tsx scripts/feed-soak.mts",
+    "report": "tsx src/report/cli.ts",
     "coherence:check": "tsx src/coherence/inspect-cli.ts",
     "coherence:report": "tsx src/coherence/inspect-cli.ts --report",
     "pricing:verify": "tsx scripts/verify-executable-cost.mts",
