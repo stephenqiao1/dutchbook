@@ -1453,6 +1453,106 @@ HTTP requests actually delivered: 8 (counted 8)
 The last line matters: it counts requests the mock server actually received, so
 "sent 1" cannot be satisfied by a transport that quietly dropped the message.
 
+## Dashboard
+
+A public, read-only single-page app at **<https://dutchbook.fly.dev/>**, served
+from [`src/dashboard/`](src/dashboard/) as its own Fastify route tree.
+
+Plain HTML, vanilla JS, one charting library. No framework, no build step — and
+"no build step" is literal: `tsc` only emits `src/**/*.ts`, so a `public/`
+directory would have needed a copy step in the build. The markup, stylesheet and
+client are string exports from TypeScript modules instead, served with
+content-hash ETags.
+
+| Page | Shows |
+| --- | --- |
+| Status | Markets tracked, relation edges by source, open violations with net edge and age, last ingest |
+| Violations | The last 500 episodes, sortable, with lifetime, peak edge, status and the constraint broken |
+| Lifetimes | The lifetime distribution, split apparent/confirmed |
+| Families | A ladder or partition with its coherence constraint drawn on it |
+
+### The constraint is drawn, not stated
+
+The family view exists so a violation is *the picture being wrong* rather than a
+number you have to check.
+
+A **partition** is a stacked bar against a hard dashed line at 1.00. The bar is
+scaled by `max(1, sum) × 1.08`, so when the members sum to more than one the
+stack visibly runs past the line — clipping it at 100% width would hide exactly
+the case worth seeing.
+
+A **ladder** is one rung per market in entailment order, each with an amber
+ceiling mark at the lowest price among the markets it entails — the highest that
+market is allowed to be. A rung whose fill crosses its own ceiling is the
+violation. Rungs are ordered by Kahn's algorithm, which falls back to price order
+on a cycle: the graph rejects cycles on write, but this view renders whatever is
+in the database and a layout that hangs on bad data is worse than one that
+degrades.
+
+### Public JSON
+
+```
+/api/violations?limit=500&status=open|closed|confirmed|apparent
+/api/relations?limit=200&source=ladder&type=implies
+/api/status   /api/lifetimes   /api/families   /api/families/:key
+```
+
+`access-control-allow-origin: *`, because the point of publishing it is that
+someone else can build on it and a browser cannot fetch cross-origin without it.
+Safe here precisely because there is nothing to authorise: no cookies, no auth,
+every route a read.
+
+Limits are **clamped, not rejected** — asking for 10,000 violations returns 500
+and a `limit` field saying so, which is more useful than a 400 on a read-only
+feed. Every query is bounded, because without authentication one request must
+not be able to ask Postgres for the whole catalog.
+
+### Surviving being public
+
+**Stale-while-revalidate, not a TTL cache.** The first version used a plain
+10-second TTL and production showed why that fails: the status aggregate scans
+~300k markets with no index on `closed`, and on Fly's shared CPU it took between
+6 and 25 seconds. When the query is slower than the TTL, *every* request is a
+miss — the cache is pure overhead and every visitor waits on Postgres. Now a
+stale value is served immediately and the refresh happens behind it; only a cold
+cache waits, and the caches are primed at boot so the first visitor is not the
+one who pays. Measured on production: 6.7s cold, **90ms after**.
+
+The trade is that the page can show data older than the TTL when the database is
+struggling, so the payload carries `generatedAt` and the page renders it —
+"Snapshot taken 34s ago". Stale is fine; silently stale is not.
+
+**Nothing is ever assigned to `innerHTML`.** Market questions are
+attacker-controlled — anyone can create a market — and this page renders them.
+Every value goes in via `textContent`; a test asserts the served client contains
+no `innerHTML` assignment, `insertAdjacentHTML`, or `document.write`.
+
+**Gzip via `node:zlib`**, hand-rolled rather than a plugin: 500 episodes is
+276KB of JSON, and over mobile data that is worth about twenty times its
+compressed size. Measured 276KB → 13.6KB.
+
+The chart library is the one external dependency on the page — Chart.js pinned
+to an exact version with a subresource-integrity hash, so the CDN can serve a
+different file and the browser will not run it. If it fails to load, the
+distribution renders as a list instead of a blank box.
+
+### Legible on a phone
+
+Mobile-first, so the wide layouts are the media query. Below 40rem tables become
+cards, each cell keeping its column name via `data-label` — a seven-column table
+on a 375px screen is either unreadable or a horizontal scroll nobody discovers.
+
+Verified by rendering, not by inspection. The first attempt at this used
+`--window-size=390` on headless Chrome and appeared to show the page overflowing
+badly; measuring through the DevTools protocol showed `innerWidth: 500` and
+`scrollWidth: 485` — no overflow at all. `--window-size` had produced a 390px
+*image* of a 500px viewport, cropping the right edge out of the picture. Under
+real device emulation all four pages report `scrollWidth === 390` at 390×844.
+
+That pass did surface one genuine bug: the violations table said "tap a column to
+sort", and on a phone `thead` is `display: none`. There were no headers to tap.
+There is now a sort control.
+
 ## Metrics
 
 `GET /metrics` serves the Prometheus text exposition format, and Fly's managed

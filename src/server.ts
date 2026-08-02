@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 
 import { config } from './config.js';
+import { dashboard } from './dashboard/index.js';
 import { countCatalog, pingDatabase } from './db/client.js';
 import { catalogJobStats, type CatalogJobStats } from './jobs/catalog-queue.js';
 import { describeError } from './errors.js';
@@ -42,6 +43,8 @@ export interface BuildServerOptions {
   jobStats?: () => Promise<CatalogJobStats>;
   /** Refreshes scrape-time gauges. Defaults to querying Postgres and Redis. */
   metricsCollector?: MetricsCollector;
+  /** Mount the public dashboard. Default true. */
+  dashboard?: boolean;
 }
 
 type ProbeResult = { ok: true } | { ok: false; error: string };
@@ -137,6 +140,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const body = await renderMetrics(collectMetrics);
     return reply.code(200).header('content-type', METRICS_CONTENT_TYPE).send(body);
   });
+
+  // The public dashboard, as its own route tree. Registered last so its error
+  // handler is scoped to the plugin and cannot swallow a health-check failure —
+  // `/health` must keep returning its own 503 shape for the orchestrator.
+  if (options.dashboard !== false) {
+    void app.register(dashboard, { jobStats: stats, version });
+  }
 
   // Counted here rather than per route: `url` would be unbounded cardinality
   // once ids appear in paths, and the status code is what alerts fire on.
