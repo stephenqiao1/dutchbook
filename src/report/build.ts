@@ -5,6 +5,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
 import { db } from '../db/client.js';
 import type * as schema from '../db/schema.js';
+import { COST_MODEL, COST_MODEL_VERIFIED_ON } from '../pricing/costs.js';
 import { barChart, heatmap, PALETTE } from './charts.js';
 import {
   bucketise,
@@ -949,6 +950,21 @@ function renderLimitations(d: RenderInput): string {
   );
 
   add(`### Where the fee model could be wrong`);
+  add(
+    `The cost register, printed from \`src/pricing/costs.ts\` rather than restated —`,
+    `last verified ${COST_MODEL_VERIFIED_ON}. An assumption cannot change without this table`,
+    `changing with it, which is the only way a documented model stays a true one.`,
+    ``,
+    table(
+      ['Component', 'Value', 'Acted on?', 'Source'],
+      COST_MODEL.map((c) => [
+        c.name,
+        `${c.value}${c.unit === '—' || c.unit === 'fraction' ? '' : ` ${c.unit}`}`,
+        c.enforced ? 'yes' : '**no**',
+        cell(c.source, 88),
+      ]),
+    ),
+  );
   add(
     `Fees decide the apparent/confirmed boundary, so an error there moves every headline`,
     `count in this report. Three known weaknesses, in descending order of how much they`,

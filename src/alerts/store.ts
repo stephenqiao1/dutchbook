@@ -154,25 +154,3 @@ export async function claimResolution(
   return updated.length > 0;
 }
 
-/** Deliveries by kind, for the operational view. */
-export async function deliveryStats(
-  database: Database = db,
-): Promise<{ kind: string; keys: number; messages: number; escalations: number }[]> {
-  const rows = await database.execute<{
-    kind: string;
-    keys: number;
-    messages: number;
-    escalations: number;
-  }>(sql`
-    select kind, count(*)::int keys,
-           coalesce(sum(send_count), 0)::int messages,
-           coalesce(sum(escalations), 0)::int escalations
-    from alert_deliveries group by kind order by kind
-  `);
-  return rows.map((row) => ({
-    kind: row.kind,
-    keys: Number(row.keys),
-    messages: Number(row.messages),
-    escalations: Number(row.escalations),
-  }));
-}

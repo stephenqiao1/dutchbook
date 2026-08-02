@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
 import { db } from '../db/client.js';
@@ -327,15 +327,3 @@ export async function proposalPrecision(database: Database = db): Promise<Propos
   };
 }
 
-/** Recently decided proposals, newest first. */
-export async function recentVerdicts(
-  database: Database = db,
-  limit = 20,
-): Promise<schema.RelationProposalRow[]> {
-  return database
-    .select()
-    .from(relationProposals)
-    .where(sql`${relationProposals.status} <> 'pending'`)
-    .orderBy(desc(relationProposals.reviewedAt))
-    .limit(limit);
-}

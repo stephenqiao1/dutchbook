@@ -17,7 +17,7 @@
  */
 
 /** When the figures below were last verified against their sources. */
-export const ASSUMPTIONS_VERIFIED_ON = '2026-08-01';
+const VERIFIED_ON = '2026-08-01';
 
 // ---------------------------------------------------------------------------
 // Trading fees
@@ -211,7 +211,6 @@ export const GAS_COST_USDC = 0;
  * Source: https://docs.polymarket.com/trading/fees (checked 2026-08-01)
  */
 export const DEPOSIT_COST_USDC = 0;
-export const WITHDRAWAL_COST_USDC = 0;
 
 /**
  * Minimum order size, in shares, below which the venue rejects an order.
@@ -250,6 +249,89 @@ export const FALLBACK_TICK_SIZE = 0.01;
  * made Gamma prices unusable, and it is deliberately tight.
  */
 export const MAX_BOOK_AGE_MS = 5_000;
+
+/**
+ * The register, as data.
+ *
+ * Every assumption above, in one array the report prints verbatim. This is what
+ * stops the register rotting: a constant nothing reads is prose pretending to be
+ * code, and prose drifts from the model it claims to describe. Rendering it into
+ * §7 of the report means an assumption cannot change without the published
+ * document changing with it.
+ *
+ * `enforced` is the uncomfortable column. `MAX_BOOK_AGE_MS` is defined, sourced
+ * and reasoned about, and nothing in the pricing path currently checks it —
+ * saying so here is better than a constant that implies a guard exists.
+ */
+export interface CostComponent {
+  readonly name: string;
+  readonly value: number | string;
+  readonly unit: string;
+  readonly source: string;
+  /** False when the value is recorded but no code acts on it. */
+  readonly enforced: boolean;
+}
+
+export const COST_MODEL_VERIFIED_ON = VERIFIED_ON;
+
+export const COST_MODEL: readonly CostComponent[] = [
+  {
+    name: 'Taker fee rate (applied)',
+    value: DEFAULT_TAKER_FEE_RATE,
+    unit: 'fraction',
+    source: 'docs.polymarket.com/trading/fees — highest published band, applied to everything because the per-market category is not published',
+    enforced: true,
+  },
+  {
+    name: 'Maker fee',
+    value: 0,
+    unit: 'USDC',
+    source: 'docs.polymarket.com/trading/fees — makers are not charged; the correcting basket is modelled as all-taker',
+    enforced: true,
+  },
+  {
+    name: 'Gas per settlement',
+    value: GAS_COST_USDC,
+    unit: 'USDC',
+    source: 'orders are matched and settled by the operator; the taker signs off-chain and pays no gas',
+    enforced: true,
+  },
+  {
+    name: 'Deposit / withdrawal',
+    value: DEPOSIT_COST_USDC,
+    unit: 'USDC',
+    source: 'docs.polymarket.com/trading/fees — no Polymarket fee; third-party on-ramp costs are per-user and not knowable here',
+    enforced: false,
+  },
+  {
+    name: 'Minimum order size (fallback)',
+    value: FALLBACK_MIN_ORDER_SIZE,
+    unit: 'shares',
+    source: 'per-market `min_order_size`; live sampling saw 5 and 15. Used only when no book is in hand',
+    enforced: true,
+  },
+  {
+    name: 'Tick size (fallback)',
+    value: FALLBACK_TICK_SIZE,
+    unit: 'USDC',
+    source: 'per-market `tick_size`; 1,000-market sample found 0.01 (613) and 0.001 (387). The coarser is the fallback',
+    enforced: false,
+  },
+  {
+    name: 'Maximum book age',
+    value: MAX_BOOK_AGE_MS,
+    unit: 'ms',
+    source: 'judgement, not a published figure — roughly the Gamma lag that made midpoints unusable',
+    enforced: false,
+  },
+  {
+    name: 'Capital cost of holding to resolution',
+    value: 'not modelled',
+    unit: '—',
+    source: 'no source; a basket on a market a year out ties up capital and this model ignores it',
+    enforced: false,
+  },
+];
 
 /**
  * Depth levels retained per side when a book is persisted.

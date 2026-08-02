@@ -6,7 +6,6 @@ import type * as schema from '../db/schema.js';
 import { marketEmbeddings } from '../db/schema.js';
 import { createLogger } from '../logger.js';
 import { embeddingText, type Embedder } from './embeddings.js';
-import { canonicalPair } from './types.js';
 
 /**
  * Candidate generation.
@@ -254,8 +253,3 @@ export async function findCandidatePairs(
   }));
 }
 
-/** Canonicalises a pair the way the unique constraint expects. */
-export function toCanonical(a: string, b: string): { low: string; high: string } {
-  const [low, high] = canonicalPair(a, b);
-  return { low, high };
-}

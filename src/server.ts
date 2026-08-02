@@ -8,6 +8,7 @@ import { countCatalog, pingDatabase } from './db/client.js';
 import { catalogJobStats, type CatalogJobStats } from './jobs/catalog-queue.js';
 import { describeError } from './errors.js';
 import { logger } from './logger.js';
+import { lifetimeStats } from './coherence/violations-store.js';
 import {
   METRICS_CONTENT_TYPE,
   apiRequests,
@@ -17,6 +18,7 @@ import {
   marketsTracked,
   renderMetrics,
   revisionsTotal,
+  violationLifetimeMedian,
   type MetricsCollector,
 } from './metrics.js';
 import { pingRedis } from './redis.js';
@@ -178,6 +180,17 @@ function defaultMetricsCollector(stats: () => Promise<CatalogJobStats>): Metrics
       marketsTracked.clear();
       marketsMissing.clear();
       revisionsTotal.clear();
+    }
+
+    try {
+      // The project's headline number. It was registered and never set, so
+      // `/metrics` silently omitted the one series the whole service exists to
+      // produce — a gauge nobody scrapes is indistinguishable from a healthy one.
+      const { medianConfirmedLifetimeSeconds } = await lifetimeStats();
+      violationLifetimeMedian.set(medianConfirmedLifetimeSeconds ?? -1);
+    } catch (err) {
+      logger.debug({ err }, 'metrics: could not read violation lifetimes');
+      violationLifetimeMedian.clear();
     }
 
     try {

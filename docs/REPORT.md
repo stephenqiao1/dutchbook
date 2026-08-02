@@ -1,6 +1,6 @@
 # dutchbook: coherence in the Polymarket catalog
 
-Generated 2026-08-02T02:02:14.543Z by `pnpm report`. Every figure below is computed
+Generated 2026-08-02T02:33:34.932Z by `pnpm report`. Every figure below is computed
 from the database at run time; none is written by hand. The report reads whatever
 `DATABASE_URL` points at, so which database produced a given copy is a property of how
 it was run and not of this file — the observation window below is the way to tell.
@@ -10,19 +10,19 @@ it was run and not of this file — the observation window below is the way to t
 |  |  |
 | --- | --- |
 | First detection | 2026-08-01T21:50:58.700Z |
-| Last observation | 2026-08-02T01:55:09.157Z |
-| Elapsed | 4.1 hours (0.17 days) |
-| Episodes recorded | 2,272 |
+| Last observation | 2026-08-02T02:33:31.840Z |
+| Elapsed | 4.7 hours (0.20 days) |
+| Episodes recorded | 2,308 |
 | Distinct calendar days | 2 |
 
 
 > **This is not thirty days of data.** The checker has been running for
-> 4.1 hours, across
+> 4.7 hours, across
 > 2 calendar day(s). Every rate, every time-of-day pattern and every
 > day-of-week claim below is therefore either unavailable or drawn from a window too
 > short to support it, and is labelled as such where it appears. The distributional
 > findings — lifetime, net edge, the size/lifetime relationship — have enough
-> episodes (n=2,212 closed) to be worth reading, with the caveat that they
+> episodes (n=2,248 closed) to be worth reading, with the caveat that they
 > describe a few hours of one particular market session and not a month.
 
 ## 1. Catalog and coverage
@@ -79,15 +79,15 @@ arbitrary pairs.
 
 | Constraint type | Episodes | Apparent | Confirmed | Confirmed share |
 | --- | --- | --- | --- | --- |
-| implies | 1,088 | 998 | 90 | 8.3% |
-| partition | 1,184 | 1,184 | 0 | 0.0% |
+| implies | 1,094 | 1,004 | 90 | 8.2% |
+| partition | 1,214 | 1,214 | 0 | 0.0% |
 
 
-**4.0% of episodes were executable.** The rest are *apparent*: the
+**3.9% of episodes were executable.** The rest are *apparent*: the
 constraint really was violated on midpoints, and the correcting trade still lost money
 once the spread, the fees and the depth were priced. Reporting them is the point —
 a scanner that only showed the 90 confirmed ones would imply the other
-2,182 were opportunities.
+2,218 were opportunities.
 
 No partition violation was ever confirmed. A partition's correcting basket needs a leg
 in *every* member market, so an n-member partition needs n simultaneous fills and pays
@@ -119,7 +119,7 @@ two legs, and every confirmed violation here is one.
 | >40c | 45 |
 
 
-Peak net profit at the profit-maximising size: median $2368.94,
+Peak net profit at the profit-maximising size: median $2372.73,
 p95 $3328.90, max $3369.80.
 
 ### The confirmed set is smaller than it looks
@@ -147,11 +147,11 @@ number to reason about.
 
 | Statistic | All closed | Confirmed only |
 | --- | --- | --- |
-| n | 2,212 | 88 |
+| n | 2,248 | 88 |
 | median | 15s | 16s |
 | p75 | 27s | 27s |
-| p95 | 4.3m | 3.4m |
-| max | 2.4h | 22.1m |
+| p95 | 5.5m | 3.4m |
+| max | 3.6h | 22.1m |
 
 
 **Median lifetime is 15s.** Half of all logical contradictions in
@@ -165,8 +165,8 @@ so the true median is at or below what is printed here, not above it.
 
 | Type | n | median | p95 | max |
 | --- | --- | --- | --- | --- |
-| implies | 1,063 | 15s | 8.0m | 2.4h |
-| partition | 1,149 | 15s | 4.1m | 1.7h |
+| implies | 1,068 | 15s | 8.3m | 3.6h |
+| partition | 1,180 | 15s | 4.1m | 1.7h |
 
 
 ### The hypothesis: do larger violations close faster?
@@ -178,30 +178,30 @@ so the true median is at or below what is printed here, not above it.
 | 0.5-1c | 0 | — | — |
 | 1-2c | 59 | 3.0m | 26.7m |
 | 2-5c | 763 | 14s | 4.1m |
-| 5-10c | 641 | 15s | 4.1m |
-| 10-25c | 460 | 15s | 3.4m |
-| >25c | 289 | 17s | 11.1m |
+| 5-10c | 674 | 15s | 4.1m |
+| 10-25c | 462 | 15s | 3.4m |
+| >25c | 290 | 17s | 11.0m |
 
 
 Pooled across every constraint type, Spearman rank correlation between peak magnitude
-and lifetime is **rho = 0.155** over n=2,212 closed episodes
+and lifetime is **rho = 0.157** over n=2,248 closed episodes
 (p < 0.001).
 
 | Scope | n | median magnitude | Spearman rho | p |
 | --- | --- | --- | --- | --- |
-| **pooled** | 2,212 | — | 0.155 | < 0.001 |
-| implies | 1,063 | 6.50¢ | 0.097 | = 0.002 |
-| partition | 1,149 | 7.15¢ | 0.214 | < 0.001 |
+| **pooled** | 2,248 | — | 0.157 | < 0.001 |
+| implies | 1,068 | 6.50¢ | 0.100 | = 0.001 |
+| partition | 1,180 | 7.15¢ | 0.213 | < 0.001 |
 
 
 **The hypothesis is not supported.** Rank correlation is positive — larger
 contradictions persisted *longer* — and it is positive inside each constraint type
-separately (`implies` rho=0.097, `partition` rho=0.214), so this is not an artefact of pooling two
+separately (`implies` rho=0.100, `partition` rho=0.213), so this is not an artefact of pooling two
 types with different magnitude scales. That was the first thing to rule out and it is
 ruled out.
 
 **But the medians cannot carry that conclusion, and the honest answer is that this
-window cannot settle the question.** 90.6% of closed episodes lasted
+window cannot settle the question.** 90.3% of closed episodes lasted
 120 seconds or less — at most two intervals of a 60-second confirmation
 loop. Their recorded lifetime is the sampling rate, not the market. That is why the
 bucket medians above are flat at ~15s across four of the five populated buckets: they
@@ -233,11 +233,11 @@ matters enormously here given how much of the sample sits at the floor.
 
 | Category | Markets under constraint | Episodes | per 1k markets | Confirmed | Median lifetime |
 | --- | --- | --- | --- | --- | --- |
-| politics | 7,571 | 337 | 44.5 | 0 | 15s |
+| politics | 7,571 | 345 | 45.6 | 0 | 15s |
 | sports | 880 | 60 | 68.2 | 0 | 16s |
 | crypto | 100 | 51 | 510.0 | 0 | 14s |
-| economics | 195 | 257 | 1317.9 | 0 | 15s |
-| other | 4,028 | 1,567 | 389.0 | 90 | 15s |
+| economics | 195 | 264 | 1353.8 | 0 | 15s |
+| other | 4,028 | 1,588 | 394.2 | 90 | 15s |
 
 
 ### By time to resolution
@@ -247,9 +247,9 @@ matters enormously here given how much of the sample sits at the floor.
 | Time to resolution | Episodes | Median lifetime |
 | --- | --- | --- |
 | <7d | 157 | 15s |
-| 7-30d | 140 | 15s |
-| 30-90d | 105 | 15s |
-| 90-365d | 1,171 | 15s |
+| 7-30d | 147 | 15s |
+| 30-90d | 109 | 15s |
+| 90-365d | 1,195 | 15s |
 | >1y | 650 | 15s |
 
 
@@ -257,20 +257,22 @@ matters enormously here given how much of the sample sits at the floor.
 
 | Constraint | Type | Category | Episodes | Confirmed | Peak magnitude | Median lifetime | Market |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `partition:1047` | partition | other | 57 | 0 | 7.30¢ | 13s | Will 11-12 SpaceX Starship launches successfully re… |
+| `partition:1047` | partition | other | 64 | 0 | 7.30¢ | 13s | Will 11-12 SpaceX Starship launches successfully re… |
+| `partition:979` | partition | politics | 55 | 0 | 7.50¢ | 18s | Will the number of Democratic House members who ret… |
+| `partition:5859` | partition | economics | 52 | 0 | 8.60¢ | 18s | Will world GDP growth be 3.7%+ in 2026? |
 | `implies:234022` | implies | other | 50 | 0 | 7.50¢ | 14s | Decibel FDV above $500M one day after launch? |
-| `partition:979` | partition | politics | 49 | 0 | 7.50¢ | 14s | Will the number of Democratic House members who ret… |
 | `implies:217835` | implies | other | 49 | 0 | 2.50¢ | 14s | Dreamcash FDV above $300M one day after launch? |
+| `implies:275767` | implies | other | 48 | 0 | 29.00¢ | 17s | Pacifica FDV above $100M one day after launch? |
 | `partition:23109` | partition | other | 48 | 0 | 6.10¢ | 14s | Will Trump deport 800-900k people? |
 | `partition:3646` | partition | other | 48 | 0 | 5.65¢ | 14s | Will Perplexity’s market cap be greater than $100B … |
 | `partition:8440` | partition | politics | 48 | 0 | 5.60¢ | 14s | Will Carlos Roberto Massa Júnior win the first roun… |
 | `partition:23424` | partition | economics | 48 | 0 | 4.50¢ | 14s | Will US GDP growth in 2026 be between 2.0% and 2.5%? |
 | `partition:17432` | partition | other | 47 | 0 | 56.45¢ | 17s | Will Galatasaray SK win on 2026-05-01? |
-| `partition:5859` | partition | economics | 47 | 0 | 8.60¢ | 17s | Will world GDP growth be 3.7%+ in 2026? |
 | `implies:211611` | implies | politics | 47 | 0 | 5.10¢ | 14s | Will Trump's approval rating hit 46% in 2026? |
 | `implies:215678` | implies | other | 47 | 0 | 4.50¢ | 14s | Ledger IPO closing market cap above $4B? |
 | `partition:1061` | partition | politics | 47 | 0 | 4.10¢ | 14s | Will the Republican Party hold between 215 and 219 … |
 | `partition:20510` | partition | other | 47 | 0 | 2.05¢ | 14s | Will OpenAI’s market cap be less than $500B at mark… |
+| `partition:980` | partition | politics | 46 | 0 | 18.40¢ | 17s | Will the number of Republican Senate members who re… |
 | `implies:274462` | implies | economics | 46 | 0 | 3.65¢ | 13s | Will the 10-year Treasury yield dip below 3.8% befo… |
 | `implies:211696` | implies | crypto | 46 | 0 | 3.50¢ | 13s | Will Bitmine announce that it holds more than 9M ET… |
 | `partition:978` | partition | politics | 46 | 0 | 2.70¢ | 13s | Will the number of Republican House members who ret… |
@@ -278,10 +280,8 @@ matters enormously here given how much of the sample sits at the floor.
 | `partition:15974` | partition | other | 45 | 0 | 580.60¢ | 16s | Exact Score: Seattle Sounders FC 1 - 2 Real Salt La… |
 | `implies:278129` | implies | other | 45 | 45 | 67.00¢ | 16s | Will OpenAI not IPO by December 31, 2026? |
 | `partition:11824` | partition | sports | 45 | 0 | 49.85¢ | 16s | T20 Series Afghanistan vs Sri Lanka: Afghanistan vs… |
-| `partition:4773` | partition | other | 45 | 0 | 46.70¢ | 16s | Will Strava’s market cap be between $3B and $4B at … |
+| `partition:4773` | partition | other | 45 | 0 | 47.90¢ | 16s | Will Strava’s market cap be between $3B and $4B at … |
 | `implies:261595` | implies | other | 45 | 0 | 35.00¢ | 16s | Valantis FDV above $150M one day after launch? |
-| `implies:275767` | implies | other | 45 | 0 | 28.00¢ | 17s | Pacifica FDV above $100M one day after launch? |
-| `implies:261597` | implies | other | 45 | 0 | 26.00¢ | 16s | Valantis FDV above $300M one day after launch? |
 
 
 ## 6. Time-of-day and day-of-week
@@ -296,12 +296,13 @@ is a single sample. No weekday effect is reported because none can be.
 | --- | --- |
 | 00:00 | 1,928 |
 | 01:00 | 199 |
+| 02:00 | 36 |
 | 21:00 | 51 |
 | 22:00 | 73 |
 | 23:00 | 21 |
 
 
-Only 5 of 24 hours were observed at all. Within them the variation is
+Only 6 of 24 hours were observed at all. Within them the variation is
 dominated by when the checker was running rather than by anything about the market, so
 no intraday pattern is claimed.
 
@@ -309,13 +310,13 @@ no intraday pattern is claimed.
 
 ### The window is hours, not a month
 
-Everything above rests on 4.1 hours of
+Everything above rests on 4.7 hours of
 checking across 2 calendar day(s), not the thirty days the analysis was
 designed for. What that permits and forbids:
 
 - **Permitted**: the shape of the lifetime distribution, the apparent/confirmed split,
   the relationship between violation size and lifetime. These are distributional and
-  have n=2,212 closed episodes behind them.
+  have n=2,248 closed episodes behind them.
 - **Forbidden**: any rate per day, any weekday effect, any intraday pattern, any claim
   about seasonality or about how the graph behaves as markets approach resolution.
   These need a window that spans the cycle they are about.
@@ -347,6 +348,22 @@ So the true incoherence of the catalog is understated by an unknown amount. Ever
 "no violation" in this report means "no violation *among the constraints we know about*".
 
 ### Where the fee model could be wrong
+
+The cost register, printed from `src/pricing/costs.ts` rather than restated —
+last verified 2026-08-01. An assumption cannot change without this table
+changing with it, which is the only way a documented model stays a true one.
+
+| Component | Value | Acted on? | Source |
+| --- | --- | --- | --- |
+| Taker fee rate (applied) | 0.07 | yes | docs.polymarket.com/trading/fees — highest published band, applied to everything becaus… |
+| Maker fee | 0 USDC | yes | docs.polymarket.com/trading/fees — makers are not charged; the correcting basket is mod… |
+| Gas per settlement | 0 USDC | yes | orders are matched and settled by the operator; the taker signs off-chain and pays no g… |
+| Deposit / withdrawal | 0 USDC | **no** | docs.polymarket.com/trading/fees — no Polymarket fee; third-party on-ramp costs are per… |
+| Minimum order size (fallback) | 5 shares | yes | per-market `min_order_size`; live sampling saw 5 and 15. Used only when no book is in h… |
+| Tick size (fallback) | 0.01 USDC | **no** | per-market `tick_size`; 1,000-market sample found 0.01 (613) and 0.001 (387). The coars… |
+| Maximum book age | 5000 ms | **no** | judgement, not a published figure — roughly the Gamma lag that made midpoints unusable |
+| Capital cost of holding to resolution | not modelled | **no** | no source; a basket on a market a year out ties up capital and this model ignores it |
+
 
 Fees decide the apparent/confirmed boundary, so an error there moves every headline
 count in this report. Three known weaknesses, in descending order of how much they
@@ -429,7 +446,7 @@ measured median **up**. The event-driven screen off the order-book feed reduces 
 does not remove it: confirmation still runs on the job queue.
 
 Episodes still open when the report runs are excluded from every lifetime statistic
-(60 of 2,272). That is right — an open episode has no
+(60 of 2,308). That is right — an open episode has no
 lifetime — but it censors the long tail: the longest-lived contradictions are exactly
 the ones most likely to still be open, so p95 and max are understated.
 

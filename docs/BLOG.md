@@ -3,14 +3,14 @@
 I built a service that watches Polymarket for statements that cannot all be true
 at once, and measures how long the contradiction survives.
 
-The answer is **fifteen seconds**. That is the median across 2,212 closed
+The answer is **fifteen seconds**. That is the median across 2,248 closed
 episodes: half of every logical inconsistency I detected was gone before I could
 have finished reading about it.
 
 That number is the whole result, and most of this post is about why you should
 believe less of it than the first paragraph suggests.
 
-*All figures from the run of 2026-08-02T01:55Z. The full generated report is in
+*All figures from the run of 2026-08-02T02:33Z. The full generated report is in
 [REPORT.md](REPORT.md); regenerate both with `pnpm report`.*
 
 ![How long a contradiction survives](charts/lifetime-distribution.png)
@@ -38,15 +38,15 @@ books.
 
 ## The lifetime finding
 
-Over four hours of continuous checking, 2,272 violation episodes opened. Of the
-2,212 that closed:
+Over four and a half hours of continuous checking, 2,308 violation episodes
+opened. Of the 2,248 that closed:
 
 | | All closed | Confirmed executable |
 | --- | --- | --- |
-| n | 2,212 | 88 |
+| n | 2,248 | 88 |
 | median | 15s | 16s |
-| p95 | 4.3m | 3.4m |
-| max | 2.4h | 22.1m |
+| p95 | 5.5m | 3.4m |
+| max | 3.6h | 22.1m |
 
 Fifteen seconds is fast enough to be a statement about infrastructure rather than
 about traders. Nobody reads a market page, notices that three probabilities sum
@@ -63,8 +63,8 @@ should close faster. It is testable and I tested it.
 
 ![Does a bigger contradiction close faster?](charts/lifetime-by-magnitude.png)
 
-Spearman rank correlation between peak magnitude and lifetime is **+0.155**
-(n=2,212, p < 0.001) — positive, meaning larger contradictions persisted
+Spearman rank correlation between peak magnitude and lifetime is **+0.157**
+(n=2,248, p < 0.001) — positive, meaning larger contradictions persisted
 *longer*. That is the opposite of the hypothesis.
 
 The first thing to rule out was pooling. Partitions and implications have very
@@ -75,13 +75,13 @@ relationship within them. It is not:
 
 | Scope | n | Spearman rho | p |
 | --- | --- | --- | --- |
-| pooled | 2,212 | +0.155 | < 0.001 |
-| `implies` | 1,063 | +0.097 | 0.002 |
-| `partition` | 1,149 | +0.214 | < 0.001 |
+| pooled | 2,248 | +0.157 | < 0.001 |
+| `implies` | 1,068 | +0.100 | 0.001 |
+| `partition` | 1,180 | +0.213 | < 0.001 |
 
 Same sign inside each type. Not Simpson's paradox.
 
-**And I still do not believe the result, because 90.6% of closed episodes lasted
+**And I still do not believe the result, because 90.3% of closed episodes lasted
 120 seconds or less.** The confirmation loop runs on a 60-second schedule. An
 episode seen once and gone by the next check is recorded at roughly one interval
 whatever its true life. For nine out of ten episodes the number I am reporting is
@@ -115,12 +115,12 @@ every screened violation goes through a second stage that fetches live order
 books, constructs the actual correcting basket, walks it level by level, and
 charges fees and slippage.
 
-Of 2,272 episodes, **90 survived that — 4.0%.**
+Of 2,308 episodes, **90 survived that — 3.9%.**
 
 | Constraint type | Episodes | Apparent | Confirmed |
 | --- | --- | --- | --- |
-| `implies` | 1,088 | 998 | 90 |
-| `partition` | 1,184 | 1,184 | **0** |
+| `implies` | 1,094 | 1,004 | 90 |
+| `partition` | 1,214 | 1,214 | **0** |
 
 Not one partition violation was ever executable, and the reason is structural: a
 partition's correcting basket needs a leg in *every* member market. An eight-way
@@ -128,7 +128,7 @@ partition needs eight simultaneous fills and pays the spread eight times. The
 arithmetic almost never survives. Every executable violation I found was a
 pairwise implication.
 
-Reporting the other 2,182 is the point. A scanner that showed only the 90 would
+Reporting the other 2,218 is the point. A scanner that showed only the 90 would
 imply the rest were opportunities it happened not to mention.
 
 ## The 90 confirmed violations are two bugs

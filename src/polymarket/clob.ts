@@ -661,14 +661,3 @@ export function parseBooksPayload(body: unknown): OrderBook[] {
   }
   return parsed.data.map((wire) => normalizeBook(wire));
 }
-
-// ---------------------------------------------------------------------------
-// Module-level convenience
-// ---------------------------------------------------------------------------
-
-let shared: ClobClient | undefined;
-
-/** The process-wide client, so one token bucket governs every caller. */
-export function clobClient(): ClobClient {
-  return (shared ??= new ClobClient());
-}

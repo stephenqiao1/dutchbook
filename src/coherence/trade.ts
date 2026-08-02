@@ -1,5 +1,5 @@
 import type { OrderBook } from '../polymarket/clob.js';
-import { DEFAULT_TAKER_FEE_RATE } from '../pricing/costs.js';
+import { DEFAULT_TAKER_FEE_RATE, FALLBACK_MIN_ORDER_SIZE } from '../pricing/costs.js';
 import { availableDepth, executableCost } from '../pricing/executable.js';
 import type { BasketSpec, Constraint, Direction } from './constraints.js';
 
@@ -303,7 +303,7 @@ export function priceCorrectingTrade(
   options: PriceTradeOptions = {},
 ): TradeAttempt {
   const feeRate = options.feeRate ?? DEFAULT_TAKER_FEE_RATE;
-  const minSize = options.minSize ?? 5;
+  const minSize = options.minSize ?? FALLBACK_MIN_ORDER_SIZE;
   const minNetProfit = options.minNetProfit ?? 1;
   const minNetEdge = options.minNetEdge ?? 0.005;
 
